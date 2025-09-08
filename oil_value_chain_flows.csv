@@ -1,0 +1,80 @@
+consuming_region,producing_country,producing_sector,sector_index,allocated_emissions,value_creation,allocation_share,flow_type,sector_category,value_chain_stage,allocated_emissions_mt
+DE,DE,"Plastics, basic",873,8205812.3064136645,29813.605318451333,0.009098255903451629,Domestic,oil,petrochemicals,8.205812306413664
+IT,WA,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7192,5404027.912654998,20572.211228442888,0.011844518830865904,International,oil,extraction,5.404027912654998
+US,US,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",4584,30884966.51802328,97611.162940857,0.00497617877865239,Domestic,oil,extraction,30.88496651802328
+US,US,Petroleum Refinery,4620,43578595.417026356,137729.0590715944,0.00702137337889412,Domestic,oil,refining,43.57859541702636
+US,US,"Plastics, basic",4622,22210434.87559897,70195.52300191845,0.003578540213993741,Domestic,oil,petrochemicals,22.21043487559897
+US,US,Chemicals nec,4626,32949460.29979655,104135.94381783996,0.005308809547072518,Domestic,other,petrochemicals,32.94946029979655
+US,US,Retail sale of automotive fuel,4679,13117159.079415323,41456.452655526424,0.0021134336865511268,Domestic,oil,transport_fuel,13.117159079415323
+US,CA,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",5073,14899246.653733596,47088.69578877206,0.002400563231077189,International,oil,extraction,14.899246653733597
+US,MX,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",5725,6320902.877316339,19977.055190621788,0.001018422433505605,International,oil,extraction,6.320902877316339
+US,CH,Chemicals nec,6256,5899840.758945504,18646.29891408403,0.0009505810007908037,International,other,petrochemicals,5.899840758945504
+US,WL,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7355,6568126.75501532,20758.400062563396,0.0010582550884338177,International,oil,extraction,6.56812675501532
+US,WM,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7844,10271236.315308025,32461.98505646778,0.0016548992582825972,International,oil,extraction,10.271236315308025
+JP,JP,Petroleum Refinery,4783,9419629.376281243,30062.374680231027,0.006550017717899364,Domestic,oil,refining,9.419629376281243
+JP,JP,Chemicals nec,4789,5988248.669385274,19111.258838988964,0.004163978572493014,Domestic,other,petrochemicals,5.988248669385274
+JP,WM,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7844,17717897.97006859,56545.9707643601,0.01232028787885268,International,oil,extraction,17.717897970068588
+CN,US,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",4584,9877768.741648821,10537.869711758609,0.0008357477913464481,International,oil,extraction,9.877768741648822
+CN,US,"Plastics, basic",4622,5317019.652027038,5672.33975742667,0.0004498675305072495,International,oil,petrochemicals,5.317019652027038
+CN,US,Chemicals nec,4626,11023395.396934718,11760.055080486467,0.0009326780771128859,International,other,petrochemicals,11.023395396934719
+CN,JP,Chemicals nec,4789,17631167.76829307,18809.40460015435,0.0014917548594835784,International,other,petrochemicals,17.63116776829307
+CN,CN,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",4910,64291748.835146956,68588.16909827729,0.005439658337435993,Domestic,oil,extraction,64.29174883514696
+CN,CN,Petroleum Refinery,4946,34099531.025352396,36378.298032238876,0.0028851260325852587,Domestic,oil,refining,34.0995310253524
+CN,CN,"Plastics, basic",4948,36228851.80950308,38649.91478950405,0.003065285660631478,Domestic,oil,petrochemicals,36.22885180950308
+CN,CN,Chemicals nec,4952,40413380.95172606,43114.08317197239,0.003419334341047733,Domestic,other,petrochemicals,40.413380951726054
+CN,BR,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",5399,16729305.737490553,17847.273897649913,0.0014154492463379306,International,oil,extraction,16.729305737490552
+CN,RU,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",5888,38985833.730214864,41591.13735079325,0.003298551047914917,International,oil,extraction,38.985833730214864
+CN,CH,Chemicals nec,6256,5447722.155630491,5811.776708219662,0.0004609261340812995,International,other,petrochemicals,5.4477221556304904
+CN,WA,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7192,19966244.579731684,21300.527428545392,0.0016893232920745982,International,oil,extraction,19.966244579731683
+CN,WL,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7355,18223150.833731283,19440.94807705843,0.001541841934044093,International,oil,extraction,18.22315083373128
+CN,WF,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7681,44678439.66187871,47664.16266624972,0.0037801965448715107,International,oil,extraction,44.67843966187871
+CN,WM,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7844,131476693.23169969,140262.87713810537,0.011124106957335575,International,oil,extraction,131.4766932316997
+CN,WM,Petroleum Refinery,7880,9048100.874881139,9652.757687707403,0.0007655504517105673,International,oil,refining,9.04810087488114
+KR,WM,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7844,13394449.198240342,23107.97630366467,0.016117212298292716,International,oil,extraction,13.394449198240341
+BR,BR,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",5399,9974314.919347294,15932.559076721154,0.009419444196148596,Domestic,oil,extraction,9.974314919347293
+BR,BR,Petroleum Refinery,5435,7317302.537565086,11688.357135772732,0.006910241302411295,Domestic,oil,refining,7.317302537565086
+IN,US,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",4584,5347748.858626521,4401.969369330682,0.0016850053427972954,International,oil,extraction,5.347748858626521
+IN,IN,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",5562,24237889.640720535,19951.282417378123,0.007637040299090379,Domestic,oil,extraction,24.237889640720535
+IN,IN,Petroleum Refinery,5598,18227391.71681543,15003.774885722789,0.005743211440931679,Domestic,oil,refining,18.22739171681543
+IN,IN,Chemicals nec,5604,16827946.85195234,13851.829722991904,0.005302264766623908,Domestic,other,petrochemicals,16.82794685195234
+IN,MX,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",5725,7435423.519522189,6120.427014469764,0.0023428041756570726,International,oil,extraction,7.435423519522189
+IN,WA,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7192,13560234.892646795,11162.031018354726,0.004272651698450281,International,oil,extraction,13.560234892646795
+IN,WL,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7355,8939321.387900984,7358.352079055804,0.0028166626178223178,International,oil,extraction,8.939321387900984
+IN,WF,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7681,13903063.411854874,11444.228384084156,0.004380672456679616,International,oil,extraction,13.903063411854875
+IN,WM,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7844,59382234.684815064,48880.15220522113,0.01871056127659196,International,oil,extraction,59.38223468481507
+IN,WM,Petroleum Refinery,7880,7325463.906485055,6029.914377984955,0.0023081573475509597,International,oil,refining,7.325463906485055
+MX,US,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",4584,5859072.540000113,10843.817445023298,0.009541234599164297,International,oil,extraction,5.8590725400001125
+MX,US,Petroleum Refinery,4620,8585014.759683989,15888.919650897844,0.01398030819728193,International,oil,refining,8.58501475968399
+MX,MX,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",5725,7922000.576226053,14661.83042819317,0.012900619590636792,Domestic,oil,extraction,7.922000576226053
+RU,RU,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",5888,118839271.76393205,106980.58687406084,0.07658606470139576,Domestic,oil,extraction,118.83927176393205
+RU,RU,Petroleum Refinery,5924,9898306.74392808,8910.578538619811,0.006378971778206523,Domestic,oil,refining,9.89830674392808
+TW,TW,Petroleum Refinery,6576,16779335.346714973,25650.423561323343,0.05786459238433549,Domestic,oil,refining,16.779335346714973
+ID,ID,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",6866,19500431.188394938,20067.561563959593,0.019985920858357924,Domestic,oil,extraction,19.500431188394938
+ID,ID,Petroleum Refinery,6902,20261194.012249038,20850.44962708865,0.020765623904030958,Domestic,oil,refining,20.26119401224904
+ID,WA,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7192,6129950.0629762495,6308.22719171365,0.0062825634797880284,International,oil,extraction,6.129950062976249
+ID,WM,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7844,11801086.157388644,12144.296743854737,0.012094890195279099,International,oil,extraction,11.801086157388644
+WA,US,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",4584,5068440.969095986,5096.901745887019,0.0013707707228911323,International,oil,extraction,5.068440969095986
+WA,US,Chemicals nec,4626,5297189.647052359,5326.934914499247,0.0014326362931038547,International,other,petrochemicals,5.297189647052359
+WA,JP,Chemicals nec,4789,7094634.266271166,7134.472710380019,0.0019187590426961818,International,other,petrochemicals,7.094634266271165
+WA,CN,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",4910,5525344.063375117,5556.370484525174,0.0014943411439841312,International,oil,extraction,5.525344063375117
+WA,CN,"Plastics, basic",4948,5159448.467816877,5188.42027830115,0.0013953838959695592,International,oil,petrochemicals,5.159448467816877
+WA,CN,Chemicals nec,4952,6058528.142134618,6092.548547657115,0.0016385419208170048,International,other,petrochemicals,6.058528142134618
+WA,RU,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",5888,11840587.398409683,11907.075755889942,0.003202312238918826,International,oil,extraction,11.840587398409683
+WA,TW,Petroleum Refinery,6576,5329067.787096161,5358.992059612623,0.0014412578044006633,International,oil,refining,5.329067787096162
+WA,WA,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7192,10636028.799827144,10695.753208863493,0.002876536784294517,Domestic,oil,extraction,10.636028799827143
+WA,WF,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7681,7402505.27819268,7444.072507978265,0.002002023417706581,International,oil,extraction,7.40250527819268
+WA,WM,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7844,29920953.315839365,30088.968210141058,0.00809218595154328,International,oil,extraction,29.920953315839366
+WA,WM,Petroleum Refinery,7880,10434589.379945721,10493.18264778873,0.0028220570614579943,International,oil,refining,10.434589379945722
+WL,US,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",4584,7696985.028993452,12916.949172136374,0.005932539794928788,International,oil,extraction,7.696985028993452
+WL,US,Petroleum Refinery,4620,9517131.590753734,15971.48812934296,0.007335438705290548,International,oil,refining,9.517131590753735
+WL,WL,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7355,34170123.837648004,57343.719801183506,0.026337016208410252,Domestic,oil,extraction,34.170123837648006
+WL,WL,Petroleum Refinery,7391,7368901.855066149,12366.365577925286,0.005679665912747833,Domestic,oil,refining,7.368901855066149
+WE,RU,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",5888,6330155.616472401,7227.973613426182,0.018398634135183705,International,oil,extraction,6.330155616472401
+WF,WA,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7192,7590495.985612858,6154.272806301439,0.003415177424828129,International,oil,extraction,7.590495985612858
+WF,WF,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7681,44656557.362080246,36206.940510528584,0.020092239935649625,Domestic,oil,extraction,44.65655736208025
+WF,WM,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7844,11836984.712909503,9597.26917257345,0.005325792022838446,International,oil,extraction,11.836984712909503
+WF,WM,Petroleum Refinery,7880,7482433.68841789,6066.6573384487465,0.0033665571609409165,International,oil,refining,7.48243368841789
+WM,RU,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",5888,5113910.404260959,5848.699473793928,0.002013862299509356,International,oil,extraction,5.113910404260959
+WM,WA,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7192,6958705.865730698,7958.563235928956,0.0027403443331140832,International,oil,extraction,6.958705865730698
+WM,WM,"Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",7844,12124351.972527549,13866.432024841488,0.004774580196616436,Domestic,oil,extraction,12.124351972527549
+WM,WM,Petroleum Refinery,7880,9595699.905627552,10974.452141743941,0.0037787948457695944,Domestic,oil,refining,9.595699905627553
