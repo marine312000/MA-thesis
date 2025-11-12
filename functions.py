@@ -517,7 +517,7 @@ def calculate_vabr(ixi_data, producer_emissions, v_clean,
 def calculate_producer_centric_vabr(ixi_data, producer_emissions, v_clean,
                                      method='leontief', max_layers=100):
     """
-    Producer-Centric (Bottom-Up) VABR.
+    Producer-Centric (Bottom-Up) VABR
     
     Starts from producer emissions and traces forward through supply chains
     to allocate responsibility based on value-added capture.
