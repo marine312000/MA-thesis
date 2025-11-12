@@ -359,11 +359,14 @@ def calculate_consumer_responsibility(ixi_data, producer_emissions,
     
     total_consumer = sum(consumer_by_country.values())
     print(f"Total consumer emissions: {total_consumer/1e9:.3f} Gt CO2-eq")
+
+    # Convert to Series before returning
+    consumer_series = pd.Series(consumer_by_country)
     
     if return_category_details:
-        return consumer_by_country, consumer_by_sector_region, consumer_by_category
+        return consumer_series, consumer_by_sector_region, consumer_by_category
     else:
-        return consumer_by_country, consumer_by_sector_region
+        return consumer_series, consumer_by_sector_region
 
 # %%
 def calculate_vabr(ixi_data, producer_emissions, v_clean, 
