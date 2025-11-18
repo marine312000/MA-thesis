@@ -1,5 +1,5 @@
 # %% [markdown]
-# this is just for functions
+# this is my new workbook for calculations, functions
 
 # %%
 # Import required libraries
@@ -367,6 +367,7 @@ def calculate_consumer_responsibility(ixi_data, producer_emissions,
         return consumer_series, consumer_by_sector_region, consumer_by_category
     else:
         return consumer_series, consumer_by_sector_region
+    
 
 # %%
 def calculate_vabr(ixi_data, producer_emissions, v_clean, 
@@ -384,7 +385,7 @@ def calculate_vabr(ixi_data, producer_emissions, v_clean,
     v_clean : np.array
         Clean value-added coefficients (use calculate_clean_va_coefficients)
     return_allocation_details : bool
-        If True, returns detailed allocation matrix for Sankey diagrams
+        If True, returns detailed allocation matrix 
     
     Returns:
     --------
@@ -509,7 +510,449 @@ def calculate_vabr(ixi_data, producer_emissions, v_clean,
     else:
         return vabr_totals, vabr_by_sector_region, consumer_totals
 
+# %%
+## Techadjusted VABR calculation. I include all three benchmark-options for emission intensities: worst in class, world average, best in class
+def calculate_vabr_tech_adjusted(
+    ixi_data,
+    producer_emissions,
+    v_clean,
+    benchmark_mode="world_avg",      # "worst", "world_avg", or "best"
+    conserve_global=True,
+    return_allocation_details=False
+):
+    """
+    Technology-adjusted VABR (T-VABR).
 
+    Same idea as your standard VABR, but:
+      - consumer emissions are computed with TECHNOLOGY-ADJUSTED
+        emission intensities (sectoral benchmark instead of actual),
+      - then reallocated via value-added shares as usual.
+
+    Inspired by Kander et al. (2015) "technology-adjusted CBA",
+    but here combined with Piñero-style VABR.
+
+    Parameters
+    ----------
+    ixi_data : pymrio IO object
+    producer_emissions : np.array
+        Producer emissions (tonnes CO2-eq) per sector-region (same order as x)
+    v_clean : np.array
+        Clean value-added coefficients (from calculate_clean_va_coefficients)
+    benchmark_mode : str
+        "worst"     -> sectoral worst-in-class intensities
+        "world_avg" -> sectoral output-weighted average (DEFAULT)
+        "best"      -> sectoral best-in-class intensities
+    conserve_global : bool
+        If True, rescale tech-adjusted consumer totals so that
+        global sum = global physical consumer emissions.
+    return_allocation_details : bool
+        Same behaviour as in calculate_vabr
+
+    Returns
+    -------
+    vabr_t_tech : pd.Series
+        Tech-adjusted VABR per country
+    vabr_by_sector_region : dict
+        Tech-adjusted VABR by sector for each country
+    consumer_tech_totals : pd.Series
+        Tech-adjusted consumer baseline per country
+    (optionally) allocation_matrix, allocation_df
+    """
+
+    print("\n=== TECHNOLOGY-ADJUSTED VABR (T-VABR) ===")
+    print(f"Benchmark mode: {benchmark_mode}, conserve_global={conserve_global}")
+
+    regions = ixi_data.get_regions()
+    n_sectors = len(ixi_data.x)
+
+    # ------------------------------------------------------------------
+    # STEP 1: Physical emission intensities (baseline CBA)
+    # ------------------------------------------------------------------
+    total_output = ixi_data.x.values.flatten()
+    e = producer_emissions.flatten()
+
+    emission_intensity_phys = np.divide(
+        e,
+        total_output,
+        out=np.zeros_like(e, dtype=float),
+        where=(total_output != 0)
+    )
+
+    B = ixi_data.L.values
+    Y_full = ixi_data.Y
+
+    # Physical CBA used ONLY as global reference for scaling
+    consumer_phys = {}
+    for region in regions:
+        mask = Y_full.columns.get_level_values(0) == region
+        y_region = Y_full.loc[:, mask].sum(axis=1).values
+        emissions_vector_phys = emission_intensity_phys * (B @ y_region)
+        consumer_phys[region] = emissions_vector_phys.sum()
+
+    consumer_phys_totals = pd.Series(consumer_phys)
+    total_consumer_phys = consumer_phys_totals.sum()
+    print(f"Physical CBA sum: {total_consumer_phys/1e9:.3f} Gt")
+
+    # ------------------------------------------------------------------
+    # STEP 2: Build TECHNOLOGY-ADJUSTED emission intensities
+    # ------------------------------------------------------------------
+    print("\nBuilding technology-adjusted intensities...")
+
+    # Sector labels (same across all regions)
+    sectors_level = ixi_data.x.index.get_level_values(1)
+
+    # Compute sector-level benchmark intensity
+    emission_intensity_tech = np.zeros_like(emission_intensity_phys, dtype=float)
+
+    unique_sectors = sectors_level.unique()
+    for sec in unique_sectors:
+        sec_mask = (sectors_level == sec)
+        f_sec = emission_intensity_phys[sec_mask]
+        x_sec = total_output[sec_mask]
+
+        if benchmark_mode == "worst":
+            # Worst-in-class benchmark (maximum intensity in sector)
+            ref = f_sec.max()
+            
+        elif benchmark_mode == "world_avg":
+            # Output-weighted world average for this sector
+            if x_sec.sum() > 0:
+                ref = np.average(f_sec, weights=x_sec)
+            else:
+                ref = f_sec.mean()
+                
+        elif benchmark_mode == "best":
+            # Best-in-class benchmark (minimum intensity in sector)
+            ref = f_sec.min()
+            
+        else:
+            raise ValueError("benchmark_mode must be 'worst', 'world_avg', or 'best'.")
+
+        emission_intensity_tech[sec_mask] = ref
+
+    # Some simple diagnostics
+    print(f"  Physical intensities: min={emission_intensity_phys.min():.2e}, "
+          f"max={emission_intensity_phys.max():.2e}")
+    print(f"  Tech-adjusted intens.: min={emission_intensity_tech.min():.2e}, "
+          f"max={emission_intensity_tech.max():.2e}")
+
+    # ------------------------------------------------------------------
+    # STEP 3: Tech-adjusted consumer baseline (T-CBA)
+    # ------------------------------------------------------------------
+    consumer_tech = {}
+    for region in regions:
+        mask = Y_full.columns.get_level_values(0) == region
+        y_region = Y_full.loc[:, mask].sum(axis=1).values
+        emissions_vector_tech = emission_intensity_tech * (B @ y_region)
+        consumer_tech[region] = emissions_vector_tech.sum()
+
+    consumer_tech_totals = pd.Series(consumer_tech)
+    total_consumer_tech = consumer_tech_totals.sum()
+    print(f"Tech-adjusted CBA sum (before scaling): {total_consumer_tech/1e9:.3f} Gt")
+
+    # Optional scaling so global sum stays = physical CBA
+    if conserve_global and total_consumer_tech > 0:
+        scale = total_consumer_phys / total_consumer_tech
+        consumer_tech_totals *= scale
+        print(f"  Scaling tech-adjusted CBA by factor {scale:.3f} "
+              f"to match physical total.")
+    else:
+        scale = 1.0
+
+    print(f"Tech-adjusted CBA sum (after scaling): "
+          f"{consumer_tech_totals.sum()/1e9:.3f} Gt")
+
+    # ------------------------------------------------------------------
+    # STEP 4: VABR reallocation (same as your original, but with tech CBA)
+    # ------------------------------------------------------------------
+    print("\nReallocating tech-adjusted consumer emissions via VABR...")
+
+    vabr_allocation = np.zeros(n_sectors)
+    allocation_flows = [] if return_allocation_details else None
+
+    for consuming_region in regions:
+        # Final demand of this consumer
+        region_mask = Y_full.columns.get_level_values(0) == consuming_region
+        y_region = Y_full.loc[:, region_mask].sum(axis=1).values
+
+        # Tech-adjusted emissions to reallocate
+        total_emissions_region = consumer_tech_totals[consuming_region]
+        if total_emissions_region == 0:
+            continue
+
+        # Value creation: v * (B @ y)
+        value_creation = v_clean * (B @ y_region)
+        total_value = value_creation.sum()
+
+        if total_value > 0:
+            allocation_shares = value_creation / total_value
+            allocated = total_emissions_region * allocation_shares
+            vabr_allocation += allocated
+
+            if return_allocation_details:
+                for i, (prod_country, prod_sector) in enumerate(ixi_data.x.index):
+                    if allocated[i] > 0:
+                        allocation_flows.append({
+                            'consuming_region': consuming_region,
+                            'producing_country': prod_country,
+                            'producing_sector': prod_sector,
+                            'allocated_emissions': allocated[i],
+                            'value_creation': value_creation[i],
+                            'allocation_share': allocation_shares[i]
+                        })
+        else:
+            print(f"Warning: No value for {consuming_region}, uniform allocation")
+            uniform = total_emissions_region / n_sectors
+            vabr_allocation += uniform
+
+    # ------------------------------------------------------------------
+    # STEP 5: Aggregate by country
+    # ------------------------------------------------------------------
+    vabr_by_country = {}
+    vabr_by_sector_region = {}
+
+    for region in regions:
+        region_mask = ixi_data.x.index.get_level_values(0) == region
+        region_indices = np.where(region_mask)[0]
+
+        vabr_by_country[region] = vabr_allocation[region_indices].sum()
+        vabr_by_sector_region[region] = pd.Series(
+            vabr_allocation[region_indices],
+            index=ixi_data.x.index[region_mask]
+        )
+
+    vabr_t_tech = pd.Series(vabr_by_country)
+
+    # ------------------------------------------------------------------
+    # STEP 6: Validation & optional detailed flows
+    # ------------------------------------------------------------------
+    total_vabr_tech = vabr_t_tech.sum()
+    error = abs(total_vabr_tech - consumer_tech_totals.sum()) / consumer_tech_totals.sum() * 100
+    print(f"\nTotal T-VABR: {total_vabr_tech/1e9:.3f} Gt, "
+          f"Error vs tech-CBA sum: {error:.4f}%")
+
+    if return_allocation_details:
+        allocation_df = pd.DataFrame(allocation_flows)
+        allocation_matrix = allocation_df.pivot_table(
+            index=['producing_country', 'producing_sector'],
+            columns='consuming_region',
+            values='allocated_emissions',
+            fill_value=0
+        )
+        print(f"Allocation matrix (T-VABR): {allocation_matrix.shape}, "
+              f"{len(allocation_df):,} flows")
+
+        return vabr_t_tech, vabr_by_sector_region, consumer_tech_totals, allocation_matrix, allocation_df
+    else:
+        return vabr_t_tech, vabr_by_sector_region, consumer_tech_totals
+
+# %%
+#finally correct (hopefully) bottom up version; I call it PCPR: producer centric profit based responsibility
+
+def calculate_pcpr(
+    ixi_data, 
+    producer_emissions, 
+    profit_components=None,
+    method='inverse',
+    max_layers=50,
+    x_floor=1e3,  # to avoid extreme values but unsure about flooring; If a sector has virtually no output, 
+    #treat it as having a minimum of 1000 €. Its flows are then tiny anyway, so we avoid crazy fractions.”
+    ##damping=1.0 for taylor method I could use a damping factor to ensure convergence, but for now I leave it out
+):
+    """
+    Calculate Producer-Centric Profit-Based Responsibility (PCPR).
+    
+    Allocates producer emissions based on downstream profit capture
+    using forward value-flow tracing through supply chains.
+    
+    Parameters:
+    -----------
+    ixi_data : pymrio object
+        Loaded EXIOBASE data
+    producer_emissions : np.array
+        Producer emissions in tonnes CO2-eq per sector
+    profit_components : list, optional
+        Profit/operating surplus components to use
+        If None, uses standard operating surplus components
+    method : str, default 'inverse'
+        'inverse' = full matrix inversion (fast, exact)
+        'layered' = layer-by-layer expansion (slow, shows convergence)
+    max_layers : int, default 50
+        Maximum layers for Taylor expansion
+    x_floor : float, default 1e3
+        Minimum output value (€) to avoid division by zero
+
+    
+    Returns:
+    --------
+    pcpr_by_country : pd.Series
+        Responsibility by country in tonnes CO2-eq
+    pcpr_by_sector_region : dict
+        Detailed responsibility by sector for each country
+    layer_convergence : list (only for taylor method)
+        Convergence data by layer
+    """
+    
+    print(f"\n=== PRODUCER-CENTRIC PROFIT-BASED RESPONSIBILITY ({method.upper()}) ===")
+    
+    regions = ixi_data.get_regions()
+    n = len(ixi_data.x)
+    
+    # Get data
+    Z = ixi_data.Z.values
+    x = ixi_data.x.values.flatten()
+    Y = ixi_data.Y.values
+    FD = Y.sum(axis=1)
+    
+    producer_emissions = producer_emissions.flatten()
+    
+    # Floor output
+    x_safe = np.maximum(x, x_floor)
+    floored_count = (x < x_floor).sum()
+    
+    print(f"Sectors: {n}, Regions: {len(regions)}")
+    print(f"Total emissions: {producer_emissions.sum()/1e9:.3f} Gt CO2-eq")
+    print(f"Floored sectors: {floored_count} ({floored_count/n*100:.1f}%)")
+    
+    # Build S matrix with FD
+    S = np.zeros((n, n+1))
+    S[:, :n] = Z / x_safe[:, None]
+    S[:, n] = FD / x_safe
+    
+    row_sums = S.sum(axis=1)
+    print(f"S row sums: mean={row_sums.mean():.3f}, max={row_sums.max():.3f}")
+    
+    # Get profit coefficients
+    if profit_components is None:
+        profit_components = [
+            "Operating surplus: Consumption of fixed capital",
+            "Operating surplus: Rents on land",
+            "Operating surplus: Royalties on resources",
+            "Operating surplus: Remaining net operating surplus"
+        ]
+    
+    VA_profit = ixi_data.factor_inputs.F.loc[profit_components].sum(axis=0).values
+    v_profit = np.divide(VA_profit, x_safe, out=np.zeros_like(VA_profit), 
+                         where=(x_safe > 0))
+    v_profit = np.clip(v_profit, 0, 1)
+    
+    print(f"Total profit VA: {VA_profit.sum()/1e9:.1f} B€")
+    print(f"Profit coefficients: mean={v_profit.mean():.3f}")
+    
+    # Compute D matrix
+    I = np.eye(n)
+    S_square = S[:, :n]
+    
+    layer_convergence = None
+    
+    if method == 'inverse':
+        print("Computing D = (I - S)^(-1)...")
+        cond = np.linalg.cond(I - S_square)
+        print(f"  Condition number: {cond:.2e}")
+        
+        try:
+            D_square = np.linalg.inv(I - S_square)
+        except np.linalg.LinAlgError:
+            print("  Warning: Using regularization")
+            D_square = np.linalg.inv(I - 0.9999*S_square)
+    
+    elif method == 'layered':
+        print(f"Computing D via Taylor expansion (max {max_layers} layers)...")
+        
+        D_square = np.zeros((n, n))
+        S_power = np.eye(n)
+        layer_convergence = []
+        
+        for layer in range(max_layers):
+            # Add term
+            D_square += S_power          # add I, S, S^2, ...
+            
+            # Track convergence
+            term_norm = np.linalg.norm(S_power)  # Das ist der neue Term
+            cumulative = D_square.sum()
+            layer_convergence.append({  
+                'layer': layer,
+                'term_norm': term_norm,
+                'cumulative': cumulative
+        })
+            
+            # Report progress
+            if layer < 5 or layer % 10 == 0:
+                print(f"    Layer {layer}: norm={term_norm:.2e}, cumulative={cumulative:.2e}")
+            
+            # Next power
+            S_power = S_power @ S_square
+            
+            # Check convergence
+            if term_norm < 1e-12:
+                print(f"  ✓ Converged at layer {layer}")
+                break
+        else:
+            print(f"  ⚠ Reached max_layers ({max_layers})")
+    
+    # Extend D with FD (CRITICAL!)
+    D = np.zeros((n, n+1))
+    D[:, :n] = D_square
+    D[:, n] = D_square @ S[:, n]  # Proper FD propagation
+    
+    direct_FD = S[:, n].mean()
+    total_FD = D[:, n].mean()
+    print(f"FD flows: direct={direct_FD:.3f}, total={total_FD:.3f} (ratio: {total_FD/direct_FD:.2f}x)")
+    
+    # Per-producer allocation
+    print("Per-producer allocation...")
+    responsibility = np.zeros(n)
+    zero_profit_count = 0
+    
+    for p in range(n):
+        if producer_emissions[p] <= 0:
+            continue
+        
+        d_p = D[p, :n]  # Distribution to sectors (exclude FD for VA)
+        profit_capture = v_profit * d_p
+        total_profit = profit_capture.sum()
+        
+        if total_profit <= 0:
+            responsibility[p] += producer_emissions[p]
+            zero_profit_count += 1
+        else:
+            responsibility += producer_emissions[p] * (profit_capture / total_profit)
+    
+    print(f"  Producers processed: {(producer_emissions > 0).sum()}")
+    print(f"  Zero profit capture: {zero_profit_count}")
+    
+    # Validation
+    total_in = producer_emissions.sum()
+    total_out = responsibility.sum()
+    error = abs(total_out - total_in) / total_in * 100
+    
+    print(f"Conservation: {total_out/1e9:.4f} Gt (error: {error:.6f}%)")
+    
+    # Aggregate by country
+    pcpr_by_country = {}
+    pcpr_by_sector_region = {}
+    
+    for region in regions:
+        mask = ixi_data.x.index.get_level_values(0) == region
+        region_indices = np.where(mask)[0]
+        
+        pcpr_by_country[region] = responsibility[region_indices].sum()
+        pcpr_by_sector_region[region] = pd.Series(
+            responsibility[region_indices],
+            index=ixi_data.x.index[mask]
+        )
+    
+    pcpr_totals = pd.Series(pcpr_by_country)
+    
+    print(f"\nTop 5 countries:")
+    for country, value in pcpr_totals.nlargest(5).items():
+        mult = value / producer_emissions[ixi_data.x.index.get_level_values(0) == country].sum()
+        print(f"  {country}: {value/1e9:.3f} Gt ({mult:.2f}x)")
+    
+    if method == 'layered':
+        return pcpr_totals, pcpr_by_sector_region, layer_convergence
+    else:
+        return pcpr_totals, pcpr_by_sector_region
 
 # %% [markdown]
 # SECTOR CLASSIFICATION
@@ -533,8 +976,7 @@ sector_classification = {
        "Extraction of crude petroleum and services related to crude oil extraction, excluding surveying",
         "Petroleum Refinery",
         "Production of electricity by petroleum and other oil derivatives",
-        "Retail sale of automotive fuel",
-        "Incineration of waste: Oil/Hazardous waste",
+        "Retail sale of automotive fuel", # at the end of Oil supply chain
     ],
 
     "Gas": [
@@ -543,11 +985,10 @@ sector_classification = {
         "Manufacture of gas; distribution of gaseous fuels through mains",
         "Production of electricity by gas",
         "Transport via pipelines",
-        "N-fertiliser",
+    
     ],
 
-    # Electricity & heat infrastructure (system-level)
-    "Electricity & Heat Infrastructure": [
+    "Energy & Utilities Infrastructure": [
         "Distribution and trade of electricity",
         "Transmission of electricity",
         "Steam and hot water supply",
@@ -597,7 +1038,7 @@ sector_classification = {
         "Quarrying of sand and clay",
         "Quarrying of stone",
         "Re-processing of ash into clinker",
-        "Mining of chemical and fertiliser minerals, production of salt, other mining and quarrying n.e.c.",
+        "Mining of chemical and fertilizer minerals, production of salt, other mining and quarrying n.e.c.",
     ],
 
     # Chemicals
@@ -606,7 +1047,7 @@ sector_classification = {
         "Manufacture of rubber and plastic products (25)",
         "Paper",
         "Pulp",
-        "N-fertiliser",  # already included, keep
+        "N-fertiliser", 
         "P- and other fertiliser",
         "Plastics, basic",
     ],
@@ -621,7 +1062,7 @@ sector_classification = {
 
 ],
     "Manufacturing (Textiles, Leather & Wood)": [
-        "Manufacture of textiles (17)",
+        "Manufacture of textiles (17)", "Manufacture of furniture; manufacturing n.e.c. (36)",
         "Manufacture of wearing apparel; dressing and dyeing of fur (18)",
         "Tanning and dressing of leather; manufacture of luggage, handbags, saddlery, harness and footwear (19)",
         "Manufacture of wood and of products of wood and cork, except furniture; manufacture of articles of straw and plaiting materials (20)",
@@ -636,21 +1077,7 @@ sector_classification = {
         "Manufacture of motor vehicles, trailers and semi-trailers (34)",
         "Manufacture of other transport equipment (35)",
     ],
-    "Manufacturing (Other)": [
-        "Manufacture of furniture; manufacturing n.e.c. (36)",
-        "Publishing, printing and reproduction of recorded media (22)",
-        "Re-processing of secondary aluminium into new aluminium",
-        "Re-processing of secondary construction material into aggregates",
-        "Re-processing of secondary copper into new copper",
-        "Re-processing of secondary glass into new glass",
-        "Re-processing of secondary lead into new lead, zinc and tin",
-        "Re-processing of secondary other non-ferrous metals into new other non-ferrous metals",
-        "Re-processing of secondary paper into new pulp",
-        "Re-processing of secondary plastic into new plastic",
-        "Re-processing of secondary preciuos metals into new preciuos metals",
-        "Re-processing of secondary steel into new steel",
-        "Re-processing of secondary wood material into new wood material",
-    ],
+    
         
       # Agriculture, forestry, fishing
     "Agriculture": [
@@ -671,14 +1098,14 @@ sector_classification = {
         "Sea and coastal water transport",
         "Inland water transport",
         "Supporting and auxiliary transport activities; activities of travel agencies (63)",
-        "Water transport", "Transport via railways", "Sale, maintenance, repair of motor vehicles, motor vehicles parts and motorcycles",
+        "Water transport", "Transport via railways", "Sale, maintenance, repair of motor vehicles, motor vehicles parts, motorcycles, motor cycles parts and accessoiries",
     ],
 
     # Waste & recycling
     "Waste & Recycling": [
         "Incineration of waste: Food", "Incineration of waste: Metals and Inert materials",
         "Incineration of waste: Paper", "Incineration of waste: Plastic",
-        "Incineration of waste: Textiles", "Incineration of waste: Wood",
+        "Incineration of waste: Textiles", "Incineration of waste: Wood", "Incineration of waste: Oil/Hazardous waste",
         "Recycling of waste and scrap",
         "Landfill of waste: Food", "Landfill of waste: Inert/metal/hazardous",
         "Landfill of waste: Paper", "Landfill of waste: Plastic", "Landfill of waste: Textiles",
@@ -692,6 +1119,19 @@ sector_classification = {
         "Biogasification of paper, incl. land application",
         "Waste water treatment, other", "Waste water treatment, food",
         "Recycling of bottles by direct reuse",
+
+        "Re-processing of secondary aluminium into new aluminium",
+        "Re-processing of secondary construction material into aggregates",
+        "Re-processing of secondary copper into new copper",
+        "Re-processing of secondary glass into new glass",
+        "Re-processing of secondary lead into new lead, zinc and tin",
+        "Re-processing of secondary other non-ferrous metals into new other non-ferrous metals",
+        "Re-processing of secondary paper into new pulp",
+        "Re-processing of secondary plastic into new plastic",
+        "Re-processing of secondary preciuos metals into new preciuos metals",
+        "Re-processing of secondary steel into new steel",
+        "Re-processing of secondary wood material into new wood material",
+         
     ],
 
     # Services
@@ -713,7 +1153,7 @@ sector_classification = {
         "Insurance and pension funding",
         "Public administration and defence",
         "Renting of machinery and equipment without operator and of personal and household goods (71)",
-        "Community, social and personal services nec","Households as employers",
+        "Community, social and personal services nec","Households as employers", "Publishing, printing and reproduction of recorded media (22)",
         
     ],
 
@@ -741,10 +1181,9 @@ sector_colours = {
     "Chemicals & Plastics": "#e377c2",
     "Manufacturing (Food & Beverages)": "#ff7f0e",
     "Manufacturing (Textiles, Leather & Wood)": "#17becf",
-    "Manufacturing (Machinery & Equipment)": "#1f77b4",
-    "Manufacturing (Other)": "#aec7e8",
-    "Agriculture": "#ffbb78",
-    "Construction & Trade": "#98df8a",
+    "Manufacturing (Machinery & Equipment)":  "#6b6ecf",
+    "Agriculture": "#a6d854",
+    "Construction & Trade": "#8dd3c7",
     "Transport": "#c49c94",
     "Waste & Recycling": "#f7b6d2",
     "Services": "#c7c7c7",
