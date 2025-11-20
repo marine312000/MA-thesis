@@ -159,9 +159,19 @@ EMISSION_CATEGORIES = {
     'PFC - air': 1.0   # Already in CO2-eq
 }
 
+ALL_VALUE_ADDED_COMPONENTS = [
+    "Taxes less subsidies on products purchased: Total",     # For sensitivity only!
+    "Other net taxes on production",
+    "Compensation of employees; wages, salaries, & employers' social contributions: Low-skilled",
+    "Compensation of employees; wages, salaries, & employers' social contributions: Medium-skilled",
+    "Compensation of employees; wages, salaries, & employers' social contributions: High-skilled",
+    "Operating surplus: Consumption of fixed capital",    
+    "Operating surplus: Rents on land",
+    "Operating surplus: Royalties on resources",
+    "Operating surplus: Remaining net operating surplus"    
+]
 # Define value-added components
 VALUE_ADDED_COMPONENTS = [
-    "Taxes less subsidies on products purchased: Total",     # taxes to be exculded later
     "Other net taxes on production",
     "Compensation of employees; wages, salaries, & employers' social contributions: Low-skilled",
     "Compensation of employees; wages, salaries, & employers' social contributions: Medium-skilled",
