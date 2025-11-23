@@ -905,8 +905,6 @@ def calculate_vabr_with_tech_penalty(ixi_data, producer_emissions, v_clean,
     return responsibility_total, vabr_totals, tech_penalty, sector_gaps
 
 
-
-
 # %%
 #finally correct (hopefully) bottom up version; I call it PCPR: producer centric profit based responsibility
 
