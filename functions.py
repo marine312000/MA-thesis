@@ -521,176 +521,186 @@ def calculate_vabr(ixi_data, producer_emissions, v_clean,
         return vabr_totals, vabr_by_sector_region, consumer_totals
 
 # %%
-## Techadjusted VABR calculation. I include all three benchmark-options for emission intensities: worst in class, world average, best in class
 def calculate_vabr_tech_adjusted(
     ixi_data,
     producer_emissions,
     v_clean,
-    benchmark_mode="world_avg",      # "worst", "world_avg", or "best"
     conserve_global=True,
     return_allocation_details=False
 ):
     """
-    Technology-adjusted VABR (T-VABR).
+    Technology-adjusted VABR (Kander Option A style).
 
-    Same idea as your standard VABR, but:
-      - consumer emissions are computed with TECHNOLOGY-ADJUSTED
-        emission intensities (sectoral benchmark instead of actual),
-      - then reallocated via value-added shares as usual.
-
-    Inspired by Kander et al. (2015) "technology-adjusted CBA",
-    but here combined with Piñero-style VABR.
+    Step 1: Compute standard consumption-based emissions (CBA) using
+            actual emission intensities.
+    Step 2: Compute exports by producer-sector and world-average
+            emission intensities per *sector*.
+    Step 3: Build TCBA (technology-adjusted CBA) per country:
+            TCBA_c = CBA_c - [E_exp^world_c - E_exp^actual_c].
+            (Kander Option A)
+    Step 4: Reallocate TCBA via VABR (value-added shares), exactly as in
+            your standard calculate_vabr().
 
     Parameters
     ----------
-    ixi_data : pymrio IO object
+    ixi_data : pymrio IO object (EXIOBASE)
     producer_emissions : np.array
         Producer emissions (tonnes CO2-eq) per sector-region (same order as x)
     v_clean : np.array
-        Clean value-added coefficients (from calculate_clean_va_coefficients)
-    benchmark_mode : str
-        "worst"     -> sectoral worst-in-class intensities
-        "world_avg" -> sectoral output-weighted average (DEFAULT)
-        "best"      -> sectoral best-in-class intensities
-    conserve_global : bool
-        If True, rescale tech-adjusted consumer totals so that
-        global sum = global physical consumer emissions.
+        Clean value-added coefficients (VA per € output)
+    conserve_global : bool, default True
+        If True, scales TCBA so that global sum equals global CBA (only
+        small numerical differences should appear).
     return_allocation_details : bool
-        Same behaviour as in calculate_vabr
+        If True, returns detailed allocation data as in calculate_vabr().
 
     Returns
     -------
-    vabr_t_tech : pd.Series
-        Tech-adjusted VABR per country
+    vabr_t_techA : pd.Series
+        Tech-adjusted VABR per country (Option A)
     vabr_by_sector_region : dict
         Tech-adjusted VABR by sector for each country
-    consumer_tech_totals : pd.Series
-        Tech-adjusted consumer baseline per country
+    consumer_tcba_totals : pd.Series
+        Tech-adjusted consumer baseline (TCBA) per country
     (optionally) allocation_matrix, allocation_df
     """
 
-    print("\n=== TECHNOLOGY-ADJUSTED VABR (T-VABR) ===")
-    print(f"Benchmark mode: {benchmark_mode}, conserve_global={conserve_global}")
+    print("\n=== TECHNOLOGY-ADJUSTED VABR (Kander Option A) ===")
 
     regions = ixi_data.get_regions()
-    n_sectors = len(ixi_data.x)
+    idx = ixi_data.x.index
+    n_sectors = len(idx)
 
     # ------------------------------------------------------------------
-    # STEP 1: Physical emission intensities (baseline CBA)
+    # STEP 1: Standard physical CBA (baseline)
     # ------------------------------------------------------------------
-    total_output = ixi_data.x.values.flatten()
-    e = producer_emissions.flatten()
+    x = ixi_data.x.values.flatten()
+    e = np.asarray(producer_emissions).flatten()
 
-    emission_intensity_phys = np.divide(
+    # Actual emission intensities
+    f_dom = np.divide(
         e,
-        total_output,
+        x,
         out=np.zeros_like(e, dtype=float),
-        where=(total_output != 0)
+        where=(x != 0)
     )
 
     B = ixi_data.L.values
-    Y_full = ixi_data.Y
+    Y_df = ixi_data.Y
 
-    # Physical CBA used ONLY as global reference for scaling
-    consumer_phys = {}
-    for region in regions:
-        mask = Y_full.columns.get_level_values(0) == region
-        y_region = Y_full.loc[:, mask].sum(axis=1).values
-        emissions_vector_phys = emission_intensity_phys * (B @ y_region)
-        consumer_phys[region] = emissions_vector_phys.sum()
+    consumer_cba = {}
+    for r in regions:
+        mask_fd = (Y_df.columns.get_level_values(0) == r)
+        y_r = Y_df.loc[:, mask_fd].sum(axis=1).values
+        emissions_vector = f_dom * (B @ y_r)
+        consumer_cba[r] = emissions_vector.sum()
 
-    consumer_phys_totals = pd.Series(consumer_phys)
-    total_consumer_phys = consumer_phys_totals.sum()
-    print(f"Physical CBA sum: {total_consumer_phys/1e9:.3f} Gt")
+    consumer_cba_totals = pd.Series(consumer_cba)
+    total_cba = consumer_cba_totals.sum()
+    print(f"Standard CBA sum: {total_cba/1e9:.3f} Gt")
 
     # ------------------------------------------------------------------
-    # STEP 2: Build TECHNOLOGY-ADJUSTED emission intensities
+    # STEP 2: World-average intensities per sector (f_world)
     # ------------------------------------------------------------------
-    print("\nBuilding technology-adjusted intensities...")
+    sectors = idx.get_level_values(1).to_numpy()
+    unique_sectors = pd.unique(sectors)
 
-    # Sector labels (same across all regions)
-    sectors_level = ixi_data.x.index.get_level_values(1)
+    f_world = np.zeros_like(f_dom, dtype=float)
 
-    # Compute sector-level benchmark intensity
-    emission_intensity_tech = np.zeros_like(emission_intensity_phys, dtype=float)
-
-    unique_sectors = sectors_level.unique()
+    print("\nComputing world-average intensities per sector...")
     for sec in unique_sectors:
-        sec_mask = (sectors_level == sec)
-        f_sec = emission_intensity_phys[sec_mask]
-        x_sec = total_output[sec_mask]
+        sec_mask = (sectors == sec)
+        x_sec = x[sec_mask]
+        e_sec = e[sec_mask]
 
-        if benchmark_mode == "worst":
-            # Worst-in-class benchmark (maximum intensity in sector)
-            ref = f_sec.max()
-            
-        elif benchmark_mode == "world_avg":
-            # Output-weighted world average for this sector
-            if x_sec.sum() > 0:
-                ref = np.average(f_sec, weights=x_sec)
-            else:
-                ref = f_sec.mean()
-                
-        elif benchmark_mode == "best":
-            # Best-in-class benchmark (minimum intensity in sector)
-            ref = f_sec.min()
-            
+        if x_sec.sum() > 0:
+            f_sec_world = e_sec.sum() / x_sec.sum()
         else:
-            raise ValueError("benchmark_mode must be 'worst', 'world_avg', or 'best'.")
+            f_sec_world = 0.0
 
-        emission_intensity_tech[sec_mask] = ref
+        f_world[sec_mask] = f_sec_world
 
-    # Some simple diagnostics
-    print(f"  Physical intensities: min={emission_intensity_phys.min():.2e}, "
-          f"max={emission_intensity_phys.max():.2e}")
-    print(f"  Tech-adjusted intens.: min={emission_intensity_tech.min():.2e}, "
-          f"max={emission_intensity_tech.max():.2e}")
+    print(f"  Domestic f:   min={f_dom.min():.2e}, max={f_dom.max():.2e}")
+    print(f"  World-avg f*: min={f_world.min():.2e}, max={f_world.max():.2e}")
 
     # ------------------------------------------------------------------
-    # STEP 3: Tech-adjusted consumer baseline (T-CBA)
+    # STEP 3: Exports by producer-sector
     # ------------------------------------------------------------------
-    consumer_tech = {}
-    for region in regions:
-        mask = Y_full.columns.get_level_values(0) == region
-        y_region = Y_full.loc[:, mask].sum(axis=1).values
-        emissions_vector_tech = emission_intensity_tech * (B @ y_region)
-        consumer_tech[region] = emissions_vector_tech.sum()
+    print("\nComputing exports by producer-sector...")
 
-    consumer_tech_totals = pd.Series(consumer_tech)
-    total_consumer_tech = consumer_tech_totals.sum()
-    print(f"Tech-adjusted CBA sum (before scaling): {total_consumer_tech/1e9:.3f} Gt")
+    Z = ixi_data.Z.values
+    Y = ixi_data.Y.values
 
-    # Optional scaling so global sum stays = physical CBA
-    if conserve_global and total_consumer_tech > 0:
-        scale = total_consumer_phys / total_consumer_tech
-        consumer_tech_totals *= scale
-        print(f"  Scaling tech-adjusted CBA by factor {scale:.3f} "
-              f"to match physical total.")
+    prod_regions = idx.get_level_values(0).to_numpy()
+    col_regions_Z = ixi_data.Z.columns.get_level_values(0).to_numpy()
+    col_regions_Y = ixi_data.Y.columns.get_level_values(0).to_numpy()
+
+    x_exports = np.zeros(n_sectors)  # monetary exports per producer-sector
+
+    for r in regions:
+        mask_prod_r = (prod_regions == r)
+        # intermediate exports: sales to sectors in other regions
+        mask_cols_Z_export = (col_regions_Z != r)
+        # final demand exports
+        mask_cols_Y_export = (col_regions_Y != r)
+
+        if mask_prod_r.any():
+            x_exports[mask_prod_r] = (
+                Z[np.ix_(mask_prod_r, mask_cols_Z_export)].sum(axis=1)
+                + Y[np.ix_(mask_prod_r, mask_cols_Y_export)].sum(axis=1)
+            )
+
+    print(f"  Total exports (sum over sectors): {x_exports.sum()/1e9:.3f} B€")
+
+    # Export-related emissions, actual vs world-avg
+    E_exp_actual = f_dom * x_exports
+    E_exp_world = f_world * x_exports
+    delta_exports = E_exp_world - E_exp_actual  # >0 => country is cleaner than world avg
+
+    # ------------------------------------------------------------------
+    # STEP 4: Build TCBA per country (Option A)
+    # ------------------------------------------------------------------
+    print("\nBuilding TCBA (Option A)...")
+
+    consumer_tcba = {}
+    for r in regions:
+        mask_r = (prod_regions == r)
+        delta_r = delta_exports[mask_r].sum()
+        consumer_tcba[r] = consumer_cba_totals[r] - delta_r
+
+    consumer_tcba_totals = pd.Series(consumer_tcba)
+    total_tcba = consumer_tcba_totals.sum()
+
+    print(f"TCBA sum (before scaling): {total_tcba/1e9:.3f} Gt")
+
+    if conserve_global and total_tcba > 0:
+        scale = total_cba / total_tcba
+        consumer_tcba_totals *= scale
+        print(f"  Scaling TCBA by factor {scale:.6f} to match global CBA.")
     else:
         scale = 1.0
 
-    print(f"Tech-adjusted CBA sum (after scaling): "
-          f"{consumer_tech_totals.sum()/1e9:.3f} Gt")
+    print(f"TCBA sum (after scaling): {consumer_tcba_totals.sum()/1e9:.3f} Gt")
 
     # ------------------------------------------------------------------
-    # STEP 4: VABR reallocation (same as your original, but with tech CBA)
+    # STEP 5: Reallocate TCBA via VABR (same as standard VABR)
     # ------------------------------------------------------------------
-    print("\nReallocating tech-adjusted consumer emissions via VABR...")
+    print("\nReallocating TCBA via VABR...")
 
     vabr_allocation = np.zeros(n_sectors)
     allocation_flows = [] if return_allocation_details else None
 
     for consuming_region in regions:
         # Final demand of this consumer
-        region_mask = Y_full.columns.get_level_values(0) == consuming_region
-        y_region = Y_full.loc[:, region_mask].sum(axis=1).values
+        region_mask = (Y_df.columns.get_level_values(0) == consuming_region)
+        y_region = Y_df.loc[:, region_mask].sum(axis=1).values
 
         # Tech-adjusted emissions to reallocate
-        total_emissions_region = consumer_tech_totals[consuming_region]
+        total_emissions_region = consumer_tcba_totals[consuming_region]
         if total_emissions_region == 0:
             continue
 
-        # Value creation: v * (B @ y)
+        # Value creation as in your standard VABR
         value_creation = v_clean * (B @ y_region)
         total_value = value_creation.sum()
 
@@ -700,7 +710,7 @@ def calculate_vabr_tech_adjusted(
             vabr_allocation += allocated
 
             if return_allocation_details:
-                for i, (prod_country, prod_sector) in enumerate(ixi_data.x.index):
+                for i, (prod_country, prod_sector) in enumerate(idx):
                     if allocated[i] > 0:
                         allocation_flows.append({
                             'consuming_region': consuming_region,
@@ -716,30 +726,28 @@ def calculate_vabr_tech_adjusted(
             vabr_allocation += uniform
 
     # ------------------------------------------------------------------
-    # STEP 5: Aggregate by country
+    # STEP 6: Aggregate by country
     # ------------------------------------------------------------------
     vabr_by_country = {}
     vabr_by_sector_region = {}
 
-    for region in regions:
-        region_mask = ixi_data.x.index.get_level_values(0) == region
-        region_indices = np.where(region_mask)[0]
+    for r in regions:
+        mask_r = (prod_regions == r)
+        region_indices = np.where(mask_r)[0]
 
-        vabr_by_country[region] = vabr_allocation[region_indices].sum()
-        vabr_by_sector_region[region] = pd.Series(
+        vabr_by_country[r] = vabr_allocation[region_indices].sum()
+        vabr_by_sector_region[r] = pd.Series(
             vabr_allocation[region_indices],
-            index=ixi_data.x.index[region_mask]
+            index=idx[mask_r]
         )
 
-    vabr_t_tech = pd.Series(vabr_by_country)
+    vabr_t_techA = pd.Series(vabr_by_country)
 
-    # ------------------------------------------------------------------
-    # STEP 6: Validation & optional detailed flows
-    # ------------------------------------------------------------------
-    total_vabr_tech = vabr_t_tech.sum()
-    error = abs(total_vabr_tech - consumer_tech_totals.sum()) / consumer_tech_totals.sum() * 100
-    print(f"\nTotal T-VABR: {total_vabr_tech/1e9:.3f} Gt, "
-          f"Error vs tech-CBA sum: {error:.4f}%")
+    # Validation
+    total_vabr_techA = vabr_t_techA.sum()
+    error = abs(total_vabr_techA - consumer_tcba_totals.sum()) / consumer_tcba_totals.sum() * 100
+    print(f"\nTotal T-VABR (Option A): {total_vabr_techA/1e9:.3f} Gt, "
+          f"Error vs TCBA sum: {error:.4f}%")
 
     if return_allocation_details:
         allocation_df = pd.DataFrame(allocation_flows)
@@ -749,12 +757,155 @@ def calculate_vabr_tech_adjusted(
             values='allocated_emissions',
             fill_value=0
         )
-        print(f"Allocation matrix (T-VABR): {allocation_matrix.shape}, "
+        print(f"Allocation matrix (T-VABR Option A): {allocation_matrix.shape}, "
               f"{len(allocation_df):,} flows")
 
-        return vabr_t_tech, vabr_by_sector_region, consumer_tech_totals, allocation_matrix, allocation_df
+        return vabr_t_techA, vabr_by_sector_region, consumer_tcba_totals, allocation_matrix, allocation_df
     else:
-        return vabr_t_tech, vabr_by_sector_region, consumer_tech_totals
+        return vabr_t_techA, vabr_by_sector_region, consumer_tcba_totals
+
+def calculate_tech_gap_penalty(ixi_data, producer_emissions, 
+                               benchmark_mode="world_avg"):
+    """
+    Producer-side technology-gap penalty.
+    
+    For each sector-region:
+      - computes actual emission intensity (t/€),
+      - computes a sectoral benchmark intensity (world_avg / best / best_quartile),
+      - defines an intensity gap = max(0, actual - benchmark),
+      - converts this into "avoidable emissions" = gap * output.
+      
+    Returns:
+      excess_emissions : pd.Series (index: (region, sector))
+          Avoidable emissions in tonnes CO2-eq.
+      sector_gaps : pd.DataFrame
+          Detailed intensities and gaps per sector-region.
+    """
+    print(f"\n=== TECHNOLOGY-GAP PENALTY (Producer-Side, benchmark={benchmark_mode}) ===")
+    
+    # Total output and intensities
+    x = ixi_data.x.values.flatten()
+    e = np.asarray(producer_emissions).flatten()
+    
+    f_actual = np.divide(
+        e,
+        x,
+        out=np.zeros_like(e, dtype=float),
+        where=(x > 0)
+    )
+    
+    # Sector labels
+    idx = ixi_data.x.index
+    sectors = idx.get_level_values(1)
+    unique_sectors = sectors.unique()
+    
+    f_bench = np.zeros_like(f_actual, dtype=float)
+    
+    print("Calculating sectoral benchmarks...")
+    
+    for sec in unique_sectors:
+        mask = (sectors == sec)
+        f_sec = f_actual[mask]
+        x_sec = x[mask]
+        
+        if benchmark_mode == "world_avg":
+            if x_sec.sum() > 0:
+                bench = np.average(f_sec, weights=x_sec)
+            else:
+                bench = f_sec.mean()
+        elif benchmark_mode == "best_quartile":
+            sorted_int = np.sort(f_sec[f_sec > 0])
+            if len(sorted_int) > 0:
+                cutoff = max(1, int(len(sorted_int) * 0.25))
+                bench = sorted_int[:cutoff].mean()
+            else:
+                bench = 0.0
+        elif benchmark_mode == "best":
+            bench = f_sec[f_sec > 0].min() if (f_sec > 0).any() else 0.0
+        else:
+            raise ValueError("benchmark_mode must be 'world_avg', 'best_quartile', or 'best'")
+        
+        f_bench[mask] = bench
+    
+    # Intensity gap and avoidable emissions
+    gap = np.maximum(0, f_actual - f_bench)
+    excess_emissions_array = gap * x  # tonnes CO2-eq
+    
+    excess_emissions = pd.Series(
+        excess_emissions_array,
+        index=idx,
+        name="excess_emissions"
+    )
+    
+    sector_gaps = pd.DataFrame({
+        "actual_intensity": f_actual,
+        "benchmark_intensity": f_bench,
+        "gap": gap,
+        "excess_emissions": excess_emissions_array,
+        "output": x
+    }, index=idx)
+    
+    total_actual = e.sum()
+    total_excess = excess_emissions_array.sum()
+    if total_actual > 0:
+        share = 100 * total_excess / total_actual
+    else:
+        share = 0.0
+    print(f"Total actual emissions:   {total_actual/1e9:.2f} Gt")
+    print(f"Total avoidable emissions: {total_excess/1e9:.2f} Gt "
+          f"({share:.1f}% of global emissions)")
+    
+    return excess_emissions, sector_gaps
+
+
+def calculate_vabr_with_tech_penalty(ixi_data, producer_emissions, v_clean,
+                                     benchmark_mode="world_avg",
+                                     alpha=1.0):
+    """
+    VABR + producer-side technology-gap penalty (Option B).
+    
+    R_c_total = R_c_VABR + alpha * sum_i (excess_emissions_{c,i})
+    
+    Returns:
+      responsibility_total : pd.Series (t CO2-eq)
+      vabr_totals          : pd.Series (t CO2-eq)
+      tech_penalty         : pd.Series (t CO2-eq)
+      sector_gaps          : pd.DataFrame
+    """
+    print(f"\n=== VABR + TECHNOLOGY-GAP SURCHARGE (Option B) ===")
+    print(f"Benchmark: {benchmark_mode}, alpha={alpha}")
+    
+    # 1) Standard VABR (mass-conserving version)
+    vabr_totals, vabr_details, _ = calculate_vabr(
+        ixi_data, producer_emissions, v_clean
+    )
+    
+    # 2) Producer-side tech penalty
+    excess_emissions, sector_gaps = calculate_tech_gap_penalty(
+        ixi_data, producer_emissions, benchmark_mode
+    )
+    
+    regions = ixi_data.get_regions()
+    
+    tech_penalty_by_country = {}
+    for r in regions:
+        mask_r = (excess_emissions.index.get_level_values(0) == r)
+        tech_penalty_by_country[r] = excess_emissions[mask_r].sum()
+    
+    tech_penalty = pd.Series(tech_penalty_by_country)
+    
+    # 3) Total responsibility with alpha
+    responsibility_total = vabr_totals + alpha * tech_penalty
+    
+    print("\nGlobal totals (Gt CO2-eq):")
+    print(f"  VABR component:       {vabr_totals.sum()/1e9:.2f}")
+    print(f"  Tech penalty:         {tech_penalty.sum()/1e9:.2f}")
+    print(f"  Total responsibility: {responsibility_total.sum()/1e9:.2f}")
+    
+    return responsibility_total, vabr_totals, tech_penalty, sector_gaps
+
+
+
 
 # %%
 #finally correct (hopefully) bottom up version; I call it PCPR: producer centric profit based responsibility
