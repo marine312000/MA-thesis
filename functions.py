@@ -119,6 +119,75 @@ def load_population_data():
 # Load population
 population_2022 = load_population_data()
 
+# ===================================================================
+# REGION GROUPS
+# ===================================================================
+
+EU_COUNTRIES = [ 
+    'AT', 'BE', 'BG', 'CY', 'CZ', 'DE', 'DK', 'EE', 'ES', 'FI', 
+    'FR', 'GR', 'HR', 'HU', 'IE', 'IT', 'LT', 'LU', 'LV', 'MT', 
+    'NL', 'PL', 'PT', 'RO', 'SE', 'SI', 'SK', 'GB'
+]
+def aggregate_region_in_series(series, group_name, members, drop_members=True):
+    """
+    Aggregate a list of regions in a Series into a single group row.
+
+    Parameters
+    ----------
+    series : pd.Series
+        Indexed by EXIOBASE region codes (e.g. 'DE', 'FR', ...)
+    group_name : str
+        Name of the aggregated region (e.g. 'EU')
+    members : list of str
+        Region codes to aggregate
+    drop_members : bool
+        If True, drop individual members after aggregation.
+
+    Returns
+    -------
+    pd.Series
+    """
+    series = series.copy()
+    common = series.index.intersection(members)
+    if len(common) == 0:
+        return series
+
+    agg_value = series.loc[common].sum()
+    if drop_members:
+        series = series.drop(common)
+    series.loc[group_name] = agg_value
+    return series
+
+
+def aggregate_region_in_df(df, group_name, members, drop_members=True):
+    """
+    Aggregate a list of regions in a DataFrame (rows) into a single group row.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Rows indexed by region codes.
+    group_name : str
+        Name of aggregated region.
+    members : list of str
+        Region codes to aggregate.
+    drop_members : bool
+        If True, drop individual members after aggregation.
+
+    Returns
+    -------
+    pd.DataFrame
+    """
+    df = df.copy()
+    common = df.index.intersection(members)
+    if len(common) == 0:
+        return df
+
+    agg_row = df.loc[common].sum(axis=0)
+    if drop_members:
+        df = df.drop(common)
+    df.loc[group_name] = agg_row
+    return df
 
 # %% [markdown]
 # GHG EMISSIONS
