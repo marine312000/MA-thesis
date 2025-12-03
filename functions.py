@@ -927,10 +927,10 @@ def calculate_tech_gap_penalty(ixi_data, producer_emissions,
     return excess_emissions, sector_gaps
 
 
-def calculate_vabr_with_tech_penalty(ixi_data, producer_emissions, v_clean,
+#not mass conserving 
+"""def calculate_vabr_with_tech_penalty(ixi_data, producer_emissions, v_clean,
                                      benchmark_mode="world_avg",
                                      alpha=1.0):
-    """
     VABR + producer-side technology-gap penalty (Option B).
     
     R_c_total = R_c_VABR + alpha * sum_i (excess_emissions_{c,i})
@@ -940,7 +940,7 @@ def calculate_vabr_with_tech_penalty(ixi_data, producer_emissions, v_clean,
       vabr_totals          : pd.Series (t CO2-eq)
       tech_penalty         : pd.Series (t CO2-eq)
       sector_gaps          : pd.DataFrame
-    """
+    
     print(f"\n=== VABR + TECHNOLOGY-GAP SURCHARGE (Option B) ===")
     print(f"Benchmark: {benchmark_mode}, alpha={alpha}")
     
@@ -970,6 +970,71 @@ def calculate_vabr_with_tech_penalty(ixi_data, producer_emissions, v_clean,
     print(f"  VABR component:       {vabr_totals.sum()/1e9:.2f}")
     print(f"  Tech penalty:         {tech_penalty.sum()/1e9:.2f}")
     print(f"  Total responsibility: {responsibility_total.sum()/1e9:.2f}")
+    
+    return responsibility_total, vabr_totals, tech_penalty, sector_gaps"""
+
+#### this one is mass conserving 
+def calculate_vabr_with_tech_penalty(ixi_data, producer_emissions, v_clean,
+                                     benchmark_mode="world_avg",
+                                     alpha=1.0):
+    """
+    VABR + producer-side technology-gap penalty (Option B, mass-conserving).
+
+    Raw idea:
+      R_c_raw = R_c_VABR + alpha * sum_i (excess_emissions_{c,i})
+
+    Then rescale all R_c_raw so that global sum equals the original
+    VABR total. This keeps the *relative* tech surcharge pattern, but
+    preserves the global emissions budget.
+
+    Returns:
+      responsibility_total : pd.Series (t CO2-eq), MASS-CONSERVING
+      vabr_totals          : pd.Series (t CO2-eq)
+      tech_penalty         : pd.Series (t CO2-eq), RAW (unscaled)
+      sector_gaps          : pd.DataFrame
+    """
+    print(f"\n=== VABR + TECHNOLOGY-GAP SURCHARGE (Option B, mass-conserving) ===")
+    print(f"Benchmark: {benchmark_mode}, alpha={alpha}")
+    
+    # 1) Standard VABR (mass-conserving version)
+    vabr_totals, vabr_details, _ = calculate_vabr(
+        ixi_data, producer_emissions, v_clean
+    )
+    
+    # 2) Producer-side tech penalty (raw "excess" emissions)
+    excess_emissions, sector_gaps = calculate_tech_gap_penalty(
+        ixi_data, producer_emissions, benchmark_mode
+    )
+    
+    regions = ixi_data.get_regions()
+    
+    tech_penalty_by_country = {}
+    for r in regions:
+        mask_r = (excess_emissions.index.get_level_values(0) == r)
+        tech_penalty_by_country[r] = excess_emissions[mask_r].sum()
+    
+    tech_penalty = pd.Series(tech_penalty_by_country)
+    
+    # 3) Raw total responsibility with alpha (NOT yet mass-conserving)
+    responsibility_raw = vabr_totals + alpha * tech_penalty
+    
+    base_total = vabr_totals.sum()
+    raw_total = responsibility_raw.sum()
+    
+    if raw_total > 0:
+        scale = base_total / raw_total
+    else:
+        scale = 1.0
+    
+    # 4) Mass-conserving responsibility (scaled)
+    responsibility_total = responsibility_raw * scale
+    
+    print("\nGlobal totals (Gt CO2-eq):")
+    print(f"  VABR component:            {base_total/1e9:.2f}")
+    print(f"  Tech penalty (raw):        {tech_penalty.sum()/1e9:.2f}")
+    print(f"  Raw total (VABR+penalty):  {raw_total/1e9:.2f}")
+    print(f"  Scale factor applied:      {scale:.4f}")
+    print(f"  Mass-conserving total:     {responsibility_total.sum()/1e9:.2f}")
     
     return responsibility_total, vabr_totals, tech_penalty, sector_gaps
 
