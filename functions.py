@@ -1129,7 +1129,7 @@ def calculate_vabr_with_tech_penalty(ixi_data, producer_emissions, v_clean,
 # %%
 #finally correct (hopefully) bottom up version; I call it PCPR: producer centric profit based responsibility
 
-def calculate_pcpr(
+"""def calculate_pcpr(
     ixi_data, 
     producer_emissions, 
     profit_components=None,
@@ -1139,7 +1139,7 @@ def calculate_pcpr(
     #treat it as having a minimum of 1000 €. Its flows are then tiny anyway, so we avoid crazy fractions.”
     ##damping=1.0 for taylor method I could use a damping factor to ensure convergence, but for now I leave it out
 ):
-    """
+    
     Calculate Producer-Centric Profit-Based Responsibility (PCPR).
     
     Allocates producer emissions based on downstream profit capture
@@ -1171,7 +1171,7 @@ def calculate_pcpr(
         Detailed responsibility by sector for each country
     layer_convergence : list (only for taylor method)
         Convergence data by layer
-    """
+    
     
     print(f"\n=== PRODUCER-CENTRIC PROFIT-BASED RESPONSIBILITY ({method.upper()}) ===")
     
@@ -1332,7 +1332,276 @@ def calculate_pcpr(
     if method == 'layered':
         return pcpr_totals, pcpr_by_sector_region, layer_convergence
     else:
-        return pcpr_totals, pcpr_by_sector_region
+        return pcpr_totals, pcpr_by_sector_region"""
+    
+def calculate_pcpr(
+    ixi_data, 
+    producer_emissions, 
+    profit_components=None,
+    method='inverse',
+    max_layers=50,
+    x_floor=1e3,
+    return_flows=False,
+    min_flow=0.0,
+):
+    """
+    Calculate Producer-Centric Profit-Based Responsibility (PCPR).
+    
+    Allocates producer emissions based on downstream profit capture
+    using forward value-flow tracing through supply chains.
+    
+    Parameters
+    ----------
+    ixi_data : pymrio object
+        Loaded EXIOBASE data.
+    producer_emissions : np.array
+        Producer emissions in tonnes CO2-eq per sector (same order as x).
+    profit_components : list, optional
+        Profit/operating surplus components to use.
+        If None, uses standard operating surplus components.
+    method : {'inverse', 'layered'}, default 'inverse'
+        'inverse' = full matrix inversion (fast, exact).
+        'layered' = layer-by-layer expansion (slow, but shows convergence).
+    max_layers : int, default 50
+        Maximum layers for Taylor expansion (only used if method='layered').
+    x_floor : float, default 1e3
+        Minimum output value (€) to avoid division by (near) zero.
+    return_flows : bool, default False
+        If True, additionally returns a DataFrame of detailed flows:
+        producing_region, producing_sector, beneficiary_region,
+        beneficiary_sector, allocated_emissions.
+    min_flow : float, default 0.0
+        Minimum allocated emission (in tonnes CO2-eq) for a flow to be
+        recorded in the flows DataFrame when return_flows=True.
+    
+    Returns
+    -------
+    If method == 'inverse' and return_flows == False:
+        pcpr_totals : pd.Series
+            Responsibility by country in tonnes CO2-eq.
+        pcpr_by_sector_region : dict
+            Responsibility by sector-region for each country.
+    
+    If method == 'inverse' and return_flows == True:
+        pcpr_totals : pd.Series
+        pcpr_by_sector_region : dict
+        flows_df : pd.DataFrame
+            Columns: producing_region, producing_sector,
+                     beneficiary_region, beneficiary_sector,
+                     allocated_emissions.
+    
+    If method == 'layered' and return_flows == False:
+        pcpr_totals : pd.Series
+        pcpr_by_sector_region : dict
+        layer_convergence : list of dict
+            Convergence diagnostics per layer.
+    
+    If method == 'layered' and return_flows == True:
+        pcpr_totals : pd.Series
+        pcpr_by_sector_region : dict
+        layer_convergence : list of dict
+        flows_df : pd.DataFrame
+    """
+    
+    print(f"\n=== PRODUCER-CENTRIC PROFIT-BASED RESPONSIBILITY ({method.upper()}) ===")
+    
+    regions = ixi_data.get_regions()
+    n = len(ixi_data.x)
+    
+    # Core IO data
+    Z = ixi_data.Z.values
+    x = ixi_data.x.values.flatten()
+    Y = ixi_data.Y.values
+    FD = Y.sum(axis=1)
+    
+    producer_emissions = producer_emissions.flatten()
+    
+    # Floor output to avoid extreme coefficients
+    x_safe = np.maximum(x, x_floor)
+    floored_count = (x < x_floor).sum()
+    
+    print(f"Sectors: {n}, Regions: {len(regions)}")
+    print(f"Total emissions: {producer_emissions.sum()/1e9:.3f} Gt CO2-eq")
+    print(f"Floored sectors: {floored_count} ({floored_count/n*100:.1f}%)")
+    
+    # Build S matrix with a final-demand column
+    S = np.zeros((n, n+1))
+    S[:, :n] = Z / x_safe[:, None]
+    S[:, n] = FD / x_safe
+    
+    row_sums = S.sum(axis=1)
+    print(f"S row sums: mean={row_sums.mean():.3f}, max={row_sums.max():.3f}")
+    
+    # Profit components
+    if profit_components is None:
+        profit_components = [
+            "Operating surplus: Consumption of fixed capital",
+            "Operating surplus: Rents on land",
+            "Operating surplus: Royalties on resources",
+            "Operating surplus: Remaining net operating surplus"
+        ]
+    
+    VA_profit = ixi_data.factor_inputs.F.loc[profit_components].sum(axis=0).values
+    v_profit = np.divide(
+        VA_profit, x_safe,
+        out=np.zeros_like(VA_profit),
+        where=(x_safe > 0)
+    )
+    v_profit = np.clip(v_profit, 0, 1)
+    
+    print(f"Total profit VA: {VA_profit.sum()/1e9:.1f} B€")
+    print(f"Profit coefficients: mean={v_profit.mean():.3f}")
+    
+    # Compute D matrix (square part)
+    I = np.eye(n)
+    S_square = S[:, :n]
+    
+    layer_convergence = None
+    
+    if method == 'inverse':
+        print("Computing D = (I - S)^(-1)...")
+        cond = np.linalg.cond(I - S_square)
+        print(f"  Condition number: {cond:.2e}")
+        
+        try:
+            D_square = np.linalg.inv(I - S_square)
+        except np.linalg.LinAlgError:
+            print("  Warning: Using regularization")
+            D_square = np.linalg.inv(I - 0.9999 * S_square)
+    
+    elif method == 'layered':
+        print(f"Computing D via Taylor expansion (max {max_layers} layers)...")
+        
+        D_square = np.zeros((n, n))
+        S_power = np.eye(n)
+        layer_convergence = []
+        
+        for layer in range(max_layers):
+            # Add current term
+            D_square += S_power
+            
+            term_norm = np.linalg.norm(S_power)
+            cumulative = D_square.sum()
+            layer_convergence.append({
+                'layer': layer,
+                'term_norm': term_norm,
+                'cumulative': cumulative
+            })
+            
+            if layer < 5 or layer % 10 == 0:
+                print(f"    Layer {layer}: norm={term_norm:.2e}, cumulative={cumulative:.2e}")
+            
+            S_power = S_power @ S_square
+            
+            if term_norm < 1e-12:
+                print(f"  ✓ Converged at layer {layer}")
+                break
+        else:
+            print(f"  ⚠ Reached max_layers ({max_layers})")
+    else:
+        raise ValueError("method must be 'inverse' or 'layered'")
+    
+    # Extend D with a final-demand column
+    D = np.zeros((n, n+1))
+    D[:, :n] = D_square
+    D[:, n] = D_square @ S[:, n]
+    
+    direct_FD = S[:, n].mean()
+    total_FD = D[:, n].mean()
+    print(f"FD flows: direct={direct_FD:.3f}, total={total_FD:.3f} (ratio: {total_FD/direct_FD:.2f}x)")
+    
+    # Per-producer allocation
+    print("Per-producer allocation...")
+    responsibility = np.zeros(n)
+    zero_profit_count = 0
+    
+    # optional: detailed flows for Sankeys
+    flows_list = [] if return_flows else None
+    idx = ixi_data.x.index  # MultiIndex (region, sector)
+    
+    for p in range(n):
+        if producer_emissions[p] <= 0:
+            continue
+        
+        # Profit capture pattern of this producer p across all sectors
+        d_p = D[p, :n]
+        profit_capture = v_profit * d_p
+        total_profit = profit_capture.sum()
+        
+        if total_profit <= 0:
+            # No profit captured anywhere → keep responsibility with the producer itself
+            responsibility[p] += producer_emissions[p]
+            zero_profit_count += 1
+        else:
+            shares = profit_capture / total_profit  # how much each sector benefits
+            alloc = producer_emissions[p] * shares  # allocated emissions
+            
+            responsibility += alloc
+            
+            if return_flows:
+                prod_region, prod_sector = idx[p]
+                
+                # record only non-zero / above threshold flows
+                nonzero = np.where(alloc > min_flow)[0]
+                for j in nonzero:
+                    ben_region, ben_sector = idx[j]
+                    flows_list.append({
+                        "producing_region": prod_region,
+                        "producing_sector": prod_sector,
+                        "beneficiary_region": ben_region,
+                        "beneficiary_sector": ben_sector,
+                        "allocated_emissions": alloc[j]
+                    })
+    
+    print(f"  Producers processed: {(producer_emissions > 0).sum()}")
+    print(f"  Zero profit capture: {zero_profit_count}")
+    
+    # Validation
+    total_in = producer_emissions.sum()
+    total_out = responsibility.sum()
+    error = abs(total_out - total_in) / total_in * 100 if total_in > 0 else 0.0
+    
+    print(f"Conservation: {total_out/1e9:.4f} Gt (error: {error:.6f}%)")
+    
+    # Aggregate by country + sector-region
+    pcpr_by_country = {}
+    pcpr_by_sector_region = {}
+    
+    for region in regions:
+        mask = idx.get_level_values(0) == region
+        region_indices = np.where(mask)[0]
+        
+        pcpr_by_country[region] = responsibility[region_indices].sum()
+        pcpr_by_sector_region[region] = pd.Series(
+            responsibility[region_indices],
+            index=idx[mask]
+        )
+    
+    pcpr_totals = pd.Series(pcpr_by_country)
+    
+    print(f"\nTop 5 countries:")
+    for country, value in pcpr_totals.nlargest(5).items():
+        denom = producer_emissions[idx.get_level_values(0) == country].sum()
+        mult = value / denom if denom > 0 else np.nan
+        print(f"  {country}: {value/1e9:.3f} Gt ({mult:.2f}x)")
+    
+    # Build flows DataFrame if requested
+    flows_df = None
+    if return_flows and flows_list:
+        flows_df = pd.DataFrame(flows_list)
+    
+    # Return according to method + return_flows
+    if method == 'layered':
+        if return_flows:
+            return pcpr_totals, pcpr_by_sector_region, layer_convergence, flows_df
+        else:
+            return pcpr_totals, pcpr_by_sector_region, layer_convergence
+    else:  # inverse
+        if return_flows:
+            return pcpr_totals, pcpr_by_sector_region, flows_df
+        else:
+            return pcpr_totals, pcpr_by_sector_region
+   
 
 # %% [markdown]
 # SECTOR CLASSIFICATION
