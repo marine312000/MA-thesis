@@ -308,8 +308,9 @@ def calculate_clean_va_coefficients(ixi_data, components_to_use):
     VA = factor_inputs.loc[components_to_use].sum(axis=0).values
     
     # Fix 1: Set negative VA to 0 to avoid instability
+    neg_count = np.sum(VA < 0)
     VA[VA < 0] = 0
-    print(f"  Set {np.sum(VA < 0)} negative VA values to 0")
+    print(f"  Set {neg_count} negative VA values to 0")
     
     # Calculate total output
     total_output = ixi_data.x.values.flatten()
@@ -1637,7 +1638,7 @@ sector_classification = {
     
     ],
 
-    "Energy & Utilities Infrastructure": [
+    "Energy & Heat Infrastructure": [
         "Distribution and trade of electricity",
         "Transmission of electricity",
         "Steam and hot water supply",
