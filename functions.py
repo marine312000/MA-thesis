@@ -453,30 +453,18 @@ def calculate_consumer_responsibility(ixi_data, producer_emissions,
 def calculate_vabr(ixi_data, producer_emissions, v_clean, 
                    return_allocation_details=False):
     """
-    Calculate VABR (Value-Added-Based Responsibility) — literal Piñero-style.
+    Calculate VABR (Value-Added-Based Responsibility) — literal Piñero-style,
+    but with per-consuming-country scaling so it stays mass-conserving even
+    with cleaned/capped v_clean.
 
-    IMPORTANT:
-    - Keeps the SAME function name, SAME arguments, SAME return objects
-      as your old calculate_vabr(), so analysis.ipynb keeps working.
-    - Uses v_clean (your cleaned VA or profit coefficients), but the
-      allocation is NOT the "top-down mass-conserving redistribution".
-    - This implementation is mass-conserving at the global level by construction:
-      sum(VABR) == sum(CBA) (up to numerical precision).
-
-    Concept (compact):
-    1) f = emissions intensity (t / € output)
-    2) CBA is computed as usual: E_c = 1' * diag(f) * L * y_c
-    3) Piñero-style VABR operator:
-         h = diag(v_clean) * L * diag(f) * L
-       Then country responsibility:
-         R_c = 1' * h * y_c
-
-    Notes:
-    - This yields sector-by-sector responsibility vectors for each consuming region.
-    - We also return a "consumer_totals" Series for comparison (CBA).
+    Returns (same as your old function):
+      vabr_totals (producer-country totals),
+      vabr_by_sector_region (dict by producer country),
+      consumer_totals (CBA by consuming country),
+      optional allocation_matrix, allocation_df
     """
 
-    print(f"\n=== VABR CALCULATION (Literal Piñero) ===")
+    print(f"\n=== VABR CALCULATION (Literal Piñero, mass-conserving) ===")
     print(f"Return allocation details: {return_allocation_details}")
 
     regions = ixi_data.get_regions()
@@ -490,8 +478,7 @@ def calculate_vabr(ixi_data, producer_emissions, v_clean,
     e = np.asarray(producer_emissions).flatten()
 
     f = np.divide(
-        e,
-        x,
+        e, x,
         out=np.zeros_like(e, dtype=float),
         where=(x != 0)
     )
@@ -503,11 +490,9 @@ def calculate_vabr(ixi_data, producer_emissions, v_clean,
     Y_full = ixi_data.Y  # DataFrame with MultiIndex columns (region, fd_cat)
 
     # ----------------------------
-    # 3) Consumer baseline (CBA)
-    #    cba_vec_c = diag(f) * L * y_c
+    # 3) Consumer baseline (CBA) by consuming region
     # ----------------------------
     consumer_by_country = {}
-
     for r in regions:
         mask_fd = (Y_full.columns.get_level_values(0) == r)
         y_r = Y_full.loc[:, mask_fd].sum(axis=1).values  # (n,)
@@ -519,14 +504,10 @@ def calculate_vabr(ixi_data, producer_emissions, v_clean,
     print(f"Total consumer emissions (CBA): {total_cba/1e9:.3f} Gt")
 
     # ----------------------------
-    # 4) Piñero VABR calculation
-    #    sector_resp_c = diag(v) * L * [ diag(f) * (L * y_c) ]
-    #                 = v * (L @ (f * (L @ y_c)))
-    #
-    #    Country total is sum over producing sectors/regions.
+    # 4) Piñero allocation aggregated over all consuming regions
+    #    We build ONE producer-side allocation vector (length n)
     # ----------------------------
-    vabr_by_country = {}
-    vabr_by_sector_region = {}
+    vabr_allocation = np.zeros(n, dtype=float)
 
     allocation_flows = [] if return_allocation_details else None
 
@@ -534,58 +515,73 @@ def calculate_vabr(ixi_data, producer_emissions, v_clean,
         mask_fd = (Y_full.columns.get_level_values(0) == consuming_region)
         y_r = Y_full.loc[:, mask_fd].sum(axis=1).values  # (n,)
 
-        # Step A: total output requirements for that final demand
-        req1 = L @ y_r               # (n,)
+        total_emissions_region = float(consumer_totals[consuming_region])
+        if total_emissions_region == 0:
+            continue
 
-        # Step B: associated emissions at each producer sector
-        emis_vec = f * req1          # (n,)
+        # Piñero operator steps:
+        req1 = L @ y_r          # total output requirements for this final demand
+        emis_vec = f * req1     # emissions by producer sector-region
+        req2 = L @ emis_vec     # propagate emissions through supply chains again
 
-        # Step C: propagate those emissions through supply chains again
-        req2 = L @ emis_vec          # (n,)
+        raw_alloc = v_clean * req2
+        s = raw_alloc.sum()
 
-        # Step D: allocate by value-added coefficients
-        sector_resp = v_clean * req2 # (n,)
+        # >>> THIS is the block you were asking about <<<
+        # rescale so this consuming region's allocated sum == its CBA total
+        if s > 0:
+            allocated = raw_alloc * (total_emissions_region / s)
+        else:
+            allocated = np.ones_like(raw_alloc) * (total_emissions_region / len(raw_alloc))
 
-        vabr_by_country[consuming_region] = float(sector_resp.sum())
-        vabr_by_sector_region[consuming_region] = pd.Series(
-            sector_resp,
-            index=idx
-        )
+        vabr_allocation += allocated
 
         if return_allocation_details:
-            # "flows" here are: consuming_region → (producing_region, producing_sector)
-            # allocated_emissions = sector_resp[i]
+            # consuming_region → producing sector-region flows
             for i, (prod_country, prod_sector) in enumerate(idx):
-                val = sector_resp[i]
+                val = allocated[i]
                 if val > 0:
                     allocation_flows.append({
                         'consuming_region': consuming_region,
                         'producing_country': prod_country,
                         'producing_sector': prod_sector,
                         'allocated_emissions': val,
-                        'value_creation': np.nan,      # not defined in Piñero operator the same way
-                        'allocation_share': np.nan     # not a simple share here
+                        'value_creation': np.nan,
+                        'allocation_share': np.nan
                     })
+
+    # ----------------------------
+    # 5) Aggregate producer-side totals by producing country (LIKE YOUR OLD FUNCTION)
+    # ----------------------------
+    vabr_by_country = {}
+    vabr_by_sector_region = {}
+
+    prod_regions = idx.get_level_values(0).to_numpy()
+
+    for r in regions:
+        mask_r = (prod_regions == r)
+        region_indices = np.where(mask_r)[0]
+
+        vabr_by_country[r] = float(vabr_allocation[region_indices].sum())
+        vabr_by_sector_region[r] = pd.Series(
+            vabr_allocation[region_indices],
+            index=idx[mask_r]
+        )
 
     vabr_totals = pd.Series(vabr_by_country)
 
     # ----------------------------
-    # 5) Validation: global mass conservation vs CBA
+    # 6) Validation: global mass conservation vs CBA
     # ----------------------------
     total_vabr = float(vabr_totals.sum())
-    if total_cba > 0:
-        error = abs(total_vabr - total_cba) / total_cba * 100
-    else:
-        error = 0.0
+    error = abs(total_vabr - total_cba) / total_cba * 100 if total_cba > 0 else 0.0
     print(f"Total VABR (Piñero): {total_vabr/1e9:.3f} Gt, Error vs CBA: {error:.6f}%")
 
     # ----------------------------
-    # 6) Return format identical to your old function
+    # 7) Return (same format as your old function)
     # ----------------------------
     if return_allocation_details:
         allocation_df = pd.DataFrame(allocation_flows)
-
-        # Pivot "producing sector" x "consuming region"
         allocation_matrix = allocation_df.pivot_table(
             index=['producing_country', 'producing_sector'],
             columns='consuming_region',
@@ -593,10 +589,10 @@ def calculate_vabr(ixi_data, producer_emissions, v_clean,
             fill_value=0
         )
         print(f"Allocation matrix: {allocation_matrix.shape}, {len(allocation_df):,} flows")
-
         return vabr_totals, vabr_by_sector_region, consumer_totals, allocation_matrix, allocation_df
     else:
         return vabr_totals, vabr_by_sector_region, consumer_totals
+
 
 
 def calculate_vabr_tech_adjusted(
@@ -607,7 +603,7 @@ def calculate_vabr_tech_adjusted(
     return_allocation_details=False
 ):
     """
-    Technology-adjusted VABR (Kander Option A baseline) + Piñero-style VABR allocation.
+    Technology-adjusted VABR (Kander Option A baseline) + literal Piñero allocation.
 
     Steps:
     1) Compute standard consumption-based emissions (CBA) with actual intensities.
@@ -615,16 +611,14 @@ def calculate_vabr_tech_adjusted(
     3) Compute export volumes per producer-sector and build TCBA per country:
          TCBA_c = CBA_c - (E_exp_world_c - E_exp_actual_c)
        Then (optionally) scale TCBA to match global CBA.
-    4) Allocate each country's TCBA using the SAME Piñero operator as in calculate_vabr(),
-       but with TCBA totals as the baseline.
-       For each consuming country c:
+    4) Allocate each country's TCBA using Piñero operator:
          raw_alloc_c = v_clean * (L @ (f_dom * (L @ y_c)))
        then rescale raw_alloc_c to sum exactly to TCBA_c (country-level mass consistency).
 
-    Returns (same structure as your old function):
-      vabr_t_techA : pd.Series
-      vabr_by_sector_region : dict
-      consumer_tcba_totals : pd.Series
+    Returns:
+      vabr_t_techA : pd.Series (producer-country totals)
+      vabr_by_sector_region : dict (producer-country -> sector Series)
+      consumer_tcba_totals : pd.Series (consuming-country TCBA totals)
       (+ optional allocation_matrix, allocation_df)
     """
 
@@ -691,7 +685,7 @@ def calculate_vabr_tech_adjusted(
     col_regions_Z = ixi_data.Z.columns.get_level_values(0).to_numpy()
     col_regions_Y = ixi_data.Y.columns.get_level_values(0).to_numpy()
 
-    x_exports = np.zeros(n)
+    x_exports = np.zeros(n, dtype=float)
 
     for r in regions:
         mask_prod_r = (prod_regions == r)
@@ -709,7 +703,7 @@ def calculate_vabr_tech_adjusted(
     # Export-related emissions, actual vs world-avg
     E_exp_actual = f_dom * x_exports
     E_exp_world  = f_world * x_exports
-    delta_exports = E_exp_world - E_exp_actual  # >0 => exporter cleaner than world avg on its export mix
+    delta_exports = E_exp_world - E_exp_actual
 
     # ------------------------------------------------------------------
     # STEP 4: Build TCBA per country (Option A)
@@ -751,7 +745,7 @@ def calculate_vabr_tech_adjusted(
         if tcba_c == 0:
             continue
 
-        # Piñero raw allocation vector (n,)
+        # Piñero raw allocation (n,)
         req1 = L @ y_region
         emis_vec = f_dom * req1
         req2 = L @ emis_vec
@@ -761,7 +755,8 @@ def calculate_vabr_tech_adjusted(
         if s > 0:
             allocated = raw_alloc * (tcba_c / s)
         else:
-            allocated = np.zeros_like(raw_alloc)
+            # IMPORTANT: keep country mass consistency even if raw_alloc is all zero
+            allocated = np.ones_like(raw_alloc) * (tcba_c / len(raw_alloc))
 
         vabr_allocation += allocated
 
@@ -779,7 +774,7 @@ def calculate_vabr_tech_adjusted(
                     })
 
     # ------------------------------------------------------------------
-    # STEP 6: Aggregate by producing country (same as before)
+    # STEP 6: Aggregate by producing country
     # ------------------------------------------------------------------
     vabr_by_country = {}
     vabr_by_sector_region = {}
@@ -796,7 +791,7 @@ def calculate_vabr_tech_adjusted(
 
     vabr_t_techA = pd.Series(vabr_by_country)
 
-    # Validation
+    # Validation (global)
     total_out = float(vabr_t_techA.sum())
     denom = float(consumer_tcba_totals.sum())
     err = (abs(total_out - denom) / denom * 100) if denom > 0 else 0.0
@@ -811,10 +806,10 @@ def calculate_vabr_tech_adjusted(
             fill_value=0
         )
         print(f"Allocation matrix (T-VABR Option A): {allocation_matrix.shape}, {len(allocation_df):,} flows")
-
         return vabr_t_techA, vabr_by_sector_region, consumer_tcba_totals, allocation_matrix, allocation_df
     else:
         return vabr_t_techA, vabr_by_sector_region, consumer_tcba_totals
+
 
 
 def calculate_tech_gap_penalty(ixi_data, producer_emissions, 
@@ -912,143 +907,164 @@ def calculate_tech_gap_penalty(ixi_data, producer_emissions,
 
 
 
-#### this one is mass conserving 
-def calculate_vabr_with_tech_penalty(ixi_data, producer_emissions, v_clean,
-                                     benchmark_mode="world_avg",
-                                     alpha=1.0):
+def calculate_vabr_with_tech_penalty(
+    ixi_data,
+    producer_emissions,
+    v_clean,
+    benchmark_mode="world_avg",
+    alpha=1.0
+):
     """
-    VABR + producer-side technology-gap redistribution 
-    (Production-adjusted VABR, mass-conserving).
+    VABR + producer-side technology-gap redistribution
+    (Production-adjusted VABR, mass-conserving), consistent with LITERAL Piñero VABR.
 
-    Idea:
-      - Sectors that are dirtier than the benchmark get MORE responsibility (penalty).
-      - Sectors that are cleaner than the benchmark get LESS responsibility (bonus).
-      - The global total responsibility stays the same as standard VABR (mass-conserving).
-
-    Calculation steps:
-      1) Compute standard (mass-conserving) VABR by country, plus sector-level details.
-      2) Use technology-gap information per (country, sector):
-           - actual emission intensity,
-           - benchmark intensity (e.g. world-average),
-           - derive a signed relative gap.
-      3) Compute a country-specific tech adjustment:
-             adj_c = Σ_i [ VABR_{c,i} * rel_gap_{c,i} ]
-         where rel_gap_{c,i} can be positive (dirtier) or negative (cleaner).
-      4) Raw responsibility:
-             R_c_raw = R_c_VABR + alpha * adj_c
-      5) Rescale all R_c_raw so that the global sum equals the original VABR total:
-             scale = (Σ_c R_c_VABR) / (Σ_c R_c_raw)
-             R_c_final = R_c_raw * scale
+    IMPORTANT:
+    - Keeps SAME name/args/returns as your old function.
+    - Does NOT rely on calculate_vabr()'s internal "details" structure.
+    - Builds the base VABR sector allocation using the Piñero operator and
+      rescales per consuming country to match its CBA (so global is mass-conserving).
 
     Returns
     -------
     responsibility_total : pd.Series
         Production-adjusted VABR by country (t CO2-eq), mass-conserving.
     vabr_totals : pd.Series
-        Standard VABR by country (t CO2-eq).
+        Base (literal Piñero) VABR by country (t CO2-eq), mass-conserving vs CBA.
     tech_penalty : pd.Series
-        Net technology adjustment per country before scaling (t CO2-eq),
-        can be positive (penalty) or negative (bonus).
+        Net technology adjustment per country before scaling (t CO2-eq).
     sector_gaps : pd.DataFrame
-        Detailed intensities and gaps per (country, sector), 
-        incl. the signed relative gap (column 'rel_gap').
+        Intensities/benchmarks/gaps per (country, sector), incl. 'rel_gap'.
     """
-    print(f"\n=== VABR + TECHNOLOGY-GAP REDISTRIBUTION "
-          f"(Production-adjusted VABR, mass-conserving) ===")
+    print(f"\n=== VABR + TECHNOLOGY-GAP REDISTRIBUTION (Piñero-consistent) ===")
     print(f"Benchmark: {benchmark_mode}, alpha={alpha}")
 
+    regions = ixi_data.get_regions()
+    idx = ixi_data.x.index
+    n = len(idx)
+
     # --------------------------------------------------------------
-    # 1) Standard VABR (mass-conserving) – country totals & sector details
+    # 0) Core IO objects + emission intensity
     # --------------------------------------------------------------
-    vabr_totals, vabr_details, _ = calculate_vabr(
-        ixi_data, producer_emissions, v_clean
+    x = ixi_data.x.values.flatten()
+    e = np.asarray(producer_emissions).flatten()
+
+    f = np.divide(
+        e, x,
+        out=np.zeros_like(e, dtype=float),
+        where=(x != 0)
     )
 
-    base_total = vabr_totals.sum()
-    print(f"\nBase VABR total: {base_total/1e9:.2f} Gt CO2-eq")
+    L = ixi_data.L.values
+    Y_df = ixi_data.Y  # DataFrame, columns MultiIndex (region, fd_cat)
 
     # --------------------------------------------------------------
-    # 2) Technology gaps per (country, sector)
-    #    Uses existing helper that returns intensities & benchmarks.
+    # 1) Compute CBA totals per consuming country (baseline for scaling)
+    # --------------------------------------------------------------
+    consumer_cba = {}
+    for r in regions:
+        mask_fd = (Y_df.columns.get_level_values(0) == r)
+        y_r = Y_df.loc[:, mask_fd].sum(axis=1).values
+        cba_vec = f * (L @ y_r)
+        consumer_cba[r] = float(cba_vec.sum())
+
+    consumer_cba_totals = pd.Series(consumer_cba)
+    total_cba = float(consumer_cba_totals.sum())
+    print(f"Global CBA baseline: {total_cba/1e9:.3f} Gt CO2-eq")
+
+    # --------------------------------------------------------------
+    # 2) Base literal Piñero VABR allocation vector over ALL producer sectors
+    #    For each consuming country c:
+    #      raw_alloc_c = v_clean * (L @ ( f * (L @ y_c) ))
+    #      then rescale so sum(raw_alloc_c) == CBA_c
+    # --------------------------------------------------------------
+    print("\nComputing base (literal Piñero) VABR sector allocation...")
+    vabr_alloc = np.zeros(n, dtype=float)
+
+    for consuming_region in regions:
+        mask_fd = (Y_df.columns.get_level_values(0) == consuming_region)
+        y_c = Y_df.loc[:, mask_fd].sum(axis=1).values
+
+        cba_c = float(consumer_cba_totals[consuming_region])
+        if cba_c == 0:
+            continue
+
+        req1 = L @ y_c
+        emis_vec = f * req1
+        req2 = L @ emis_vec
+        raw_alloc = v_clean * req2
+
+        s = float(raw_alloc.sum())
+        if s > 0:
+            alloc_c = raw_alloc * (cba_c / s)
+        else:
+            # fallback: keep country mass consistency even if raw allocation is zero
+            alloc_c = np.ones_like(raw_alloc) * (cba_c / len(raw_alloc))
+
+        vabr_alloc += alloc_c
+
+    # Aggregate base VABR by PRODUCING country (this is what you plot)
+    prod_regions = idx.get_level_values(0).to_numpy()
+    vabr_by_country = {}
+    vabr_details = {}
+
+    for r in regions:
+        mask_r = (prod_regions == r)
+        r_idx = np.where(mask_r)[0]
+        vabr_by_country[r] = float(vabr_alloc[r_idx].sum())
+        vabr_details[r] = pd.Series(vabr_alloc[r_idx], index=idx[mask_r])
+
+    vabr_totals = pd.Series(vabr_by_country)
+    base_total = float(vabr_totals.sum())
+
+    err_base = (abs(base_total - total_cba) / total_cba * 100) if total_cba > 0 else 0.0
+    print(f"Base Piñero VABR total: {base_total/1e9:.3f} Gt | Error vs CBA: {err_base:.6f}%")
+
+    # --------------------------------------------------------------
+    # 3) Technology gaps per (country, sector)
     # --------------------------------------------------------------
     excess_emissions, sector_gaps = calculate_tech_gap_penalty(
         ixi_data, producer_emissions, benchmark_mode
     )
-    # sector_gaps has:
-    #  - "actual_intensity"
-    #  - "benchmark_intensity"
-    #  - "gap" (>= 0, only for avoidable emissions)
-    #  - "excess_emissions"
-    #  - "output"
 
-    # --------------------------------------------------------------
-    # 3) Signed relative gap per (country, sector)
-    # --------------------------------------------------------------
     f_act = sector_gaps["actual_intensity"]
     f_bench = sector_gaps["benchmark_intensity"]
 
-    # relative gap: positive = dirtier than benchmark, negative = cleaner
     rel_gap = (f_act - f_bench) / f_bench.replace(0, np.nan)
-
-    # Clean up numerical issues
     rel_gap = rel_gap.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-
-    sector_gaps["rel_gap"] = rel_gap  # keep for diagnostics / later analysis
+    sector_gaps["rel_gap"] = rel_gap
 
     # --------------------------------------------------------------
-    # 4) Country-specific tech adjustments (penalty + bonus)
+    # 4) Country tech penalty = Σ_i [ VABR_{c,i} * rel_gap_{c,i} ]
+    #    (producer-side, so we use vabr_details[r] that is producer-sliced)
     # --------------------------------------------------------------
-    regions = ixi_data.get_regions()
     tech_penalty_by_country = {}
 
-    idx = sector_gaps.index  # MultiIndex (region, sector)
-
     for r in regions:
-        # Sector gaps for country r
-        mask_r = (idx.get_level_values(0) == r)
-        if not mask_r.any():
-            tech_penalty_by_country[r] = 0.0
-            continue
-
+        # sector_gaps is indexed by full idx (region, sector)
+        mask_r = (sector_gaps.index.get_level_values(0) == r)
         gaps_r = sector_gaps.loc[mask_r, "rel_gap"]
 
-        if r not in vabr_details:
-            # No sector-level VABR data available for this country
-            tech_penalty_by_country[r] = 0.0
-            continue
-
-        vabr_r = vabr_details[r]  # Series indexed by (region, sector)
-
-        # Align indices (only use the sectors that exist in both)
+        vabr_r = vabr_details[r]  # producer-sliced Series (index (r, sector))
         common_idx = gaps_r.index.intersection(vabr_r.index)
+
         if len(common_idx) == 0:
             tech_penalty_by_country[r] = 0.0
             continue
 
-        gaps_r_aligned = gaps_r.loc[common_idx]
-        vabr_r_aligned = vabr_r.loc[common_idx]
-
-        # Net adjustment: Σ_i VABR_{c,i} * rel_gap_{c,i}
-        adj_r = float(np.nansum(vabr_r_aligned.values * gaps_r_aligned.values))
+        adj_r = float(np.nansum(vabr_r.loc[common_idx].values * gaps_r.loc[common_idx].values))
         tech_penalty_by_country[r] = adj_r
 
     tech_penalty = pd.Series(tech_penalty_by_country)
 
-    # Net adjustment across all countries (can be positive or negative)
-    net_adj = tech_penalty.sum()
-    print(f"\nNet technology adjustment (sum over countries): {net_adj/1e9:.2f} Gt CO2-eq")
+    net_adj = float(tech_penalty.sum())
+    print(f"\nNet technology adjustment (sum over countries): {net_adj/1e9:.3f} Gt CO2-eq")
 
     # --------------------------------------------------------------
-    # 5) Raw responsibility including tech adjustment
+    # 5) Apply penalty, then rescale to keep GLOBAL total = base_total
     # --------------------------------------------------------------
     responsibility_raw = vabr_totals + alpha * tech_penalty
-    raw_total = responsibility_raw.sum()
+    raw_total = float(responsibility_raw.sum())
 
-    print(f"Raw total (VABR + alpha * adj): {raw_total/1e9:.2f} Gt CO2-eq")
-
-    # --------------------------------------------------------------
-    # 6) Mass-conserving scaling back to base VABR total
-    # --------------------------------------------------------------
     if raw_total > 0:
         scale = base_total / raw_total
     else:
@@ -1057,10 +1073,10 @@ def calculate_vabr_with_tech_penalty(ixi_data, producer_emissions, v_clean,
     responsibility_total = responsibility_raw * scale
 
     print("\nGlobal totals after scaling (Gt CO2-eq):")
-    print(f"  Base VABR total:           {base_total/1e9:.2f}")
-    print(f"  Raw adjusted total:        {raw_total/1e9:.2f}")
-    print(f"  Scale factor applied:      {scale:.4f}")
-    print(f"  Mass-conserving total:     {responsibility_total.sum()/1e9:.2f}")
+    print(f"  Base VABR total:           {base_total/1e9:.3f}")
+    print(f"  Raw adjusted total:        {raw_total/1e9:.3f}")
+    print(f"  Scale factor applied:      {scale:.6f}")
+    print(f"  Mass-conserving total:     {responsibility_total.sum()/1e9:.3f}")
 
     return responsibility_total, vabr_totals, tech_penalty, sector_gaps
 
