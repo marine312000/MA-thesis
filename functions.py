@@ -594,129 +594,161 @@ def calculate_vabr(ixi_data, producer_emissions, v_clean,
         return vabr_totals, vabr_by_sector_region, consumer_totals
 
 
+import numpy as np
+import pandas as pd
 
 def calculate_vabr_tech_adjusted(
     ixi_data,
     producer_emissions,
     v_clean,
     conserve_global=True,
-    return_allocation_details=False
+    return_allocation_details=False,
+    batch_cols=8,
+    export_benchmark_mode="export_weighted",  # "export_weighted" (Kander “world market”) or "output_weighted"
 ):
     """
-    Technology-adjusted VABR (Kander Option A baseline) + literal Piñero allocation.
+    KANDER-STYLE TCBA (Option A) + your (literal Piñero) allocation.
 
-    Steps:
-    1) Compute standard consumption-based emissions (CBA) with actual intensities.
-    2) Compute world-average intensities per sector.
-    3) Compute export volumes per producer-sector and build TCBA per country:
-         TCBA_c = CBA_c - (E_exp_world_c - E_exp_actual_c)
-       Then (optionally) scale TCBA to match global CBA.
-    4) Allocate each country's TCBA using Piñero operator:
-         raw_alloc_c = v_clean * (L @ (f_dom * (L @ y_c)))
-       then rescale raw_alloc_c to sum exactly to TCBA_c (country-level mass consistency).
+    Implements Kander's definitions using:
+      x_i^{sr} = (L @ y^r)_i    (output of producer row i in country s for final demand in r)
+      world-market benchmark (per sector i):
+        qdot_i = sum_{s,r≠s} q_i^s * x_i^{sr} / sum_{s,r≠s} x_i^{sr}
+      EEE_s (actual)  = sum_{rows in s} q_row * x_foreign_row
+      EEE*_s (bench)  = sum_{rows in s} qdot_sector(row) * x_foreign_row
+      TCBA_s = CBA_s - (EEE*_s - EEE_s)
 
-    Returns:
-      vabr_t_techA : pd.Series (producer-country totals)
-      vabr_by_sector_region : dict (producer-country -> sector Series)
-      consumer_tcba_totals : pd.Series (consuming-country TCBA totals)
-      (+ optional allocation_matrix, allocation_df)
+    Then allocates each consuming country's TCBA total with your Piñero operator and rescales to TCBA_c.
     """
 
-    print("\n=== TECHNOLOGY-ADJUSTED VABR (Kander Option A) + Piñero allocation ===")
+    print("\n=== TECHNOLOGY-ADJUSTED VABR (Kander-style TCBA, embodied exports) + Piñero allocation ===")
 
-    regions = ixi_data.get_regions()
+    regions = list(ixi_data.get_regions())
     idx = ixi_data.x.index
     n = len(idx)
+    R = len(regions)
+    region_to_j = {r: j for j, r in enumerate(regions)}
+
+    # --- align inputs ---
+    x = ixi_data.x.values.reshape(-1).astype(float)
+
+    if hasattr(producer_emissions, "reindex"):
+        e = producer_emissions.reindex(idx).values.reshape(-1).astype(float)
+    else:
+        e = np.asarray(producer_emissions, dtype=float).reshape(-1)
+
+    if hasattr(v_clean, "reindex"):
+        v_clean_vec = v_clean.reindex(idx).values.reshape(-1).astype(float)
+    else:
+        v_clean_vec = np.asarray(v_clean, dtype=float).reshape(-1)
+
+    # domestic intensity (Kander's q_row)
+    f_dom = np.divide(e, x, out=np.zeros_like(e, dtype=float), where=(x > 0))
+
+    L = ixi_data.L.values  # (n x n)
+    Y_df = ixi_data.Y      # DataFrame with MultiIndex columns (region, fd_cat)
+
+    prod_regions = idx.get_level_values(0).to_numpy()
+    sectors = idx.get_level_values(1).to_numpy()
+    unique_sectors = pd.unique(sectors)
 
     # ------------------------------------------------------------------
-    # STEP 1: Standard physical CBA (baseline)
+    # STEP A: Build Y_by_country (n x R): y^r (sum over final demand categories)
     # ------------------------------------------------------------------
-    x = ixi_data.x.values.flatten()
-    e = np.asarray(producer_emissions).flatten()
+    print("\nBuilding final demand matrix Y_by_country...")
+    Y_by_country = np.zeros((n, R), dtype=float)
+    for j, r in enumerate(regions):
+        mask_fd_r = (Y_df.columns.get_level_values(0) == r)
+        Y_by_country[:, j] = Y_df.loc[:, mask_fd_r].sum(axis=1).values
 
-    f_dom = np.divide(
-        e, x,
-        out=np.zeros_like(e, dtype=float),
-        where=(x != 0)
+    # ------------------------------------------------------------------
+    # STEP B: Compute X = L @ Y_by_country in batches
+    #         Column j is x^{·r} = L @ y^r (producer outputs for final demand of r)
+    # ------------------------------------------------------------------
+    print("Computing X = L @ Y_by_country (batched)...")
+    X = np.zeros_like(Y_by_country)
+    for start in range(0, R, batch_cols):
+        end = min(R, start + batch_cols)
+        X[:, start:end] = L @ Y_by_country[:, start:end]
+
+    # ------------------------------------------------------------------
+    # STEP 1: Standard CBA totals: CBA_r = sum_i q_i * x_i^{·r}
+    # ------------------------------------------------------------------
+    consumer_cba_totals = pd.Series(
+        {regions[j]: float((f_dom * X[:, j]).sum()) for j in range(R)}
     )
-
-    L = ixi_data.L.values
-    Y_df = ixi_data.Y
-
-    consumer_cba = {}
-    for r in regions:
-        mask_fd = (Y_df.columns.get_level_values(0) == r)
-        y_r = Y_df.loc[:, mask_fd].sum(axis=1).values
-        cba_vec = f_dom * (L @ y_r)
-        consumer_cba[r] = float(cba_vec.sum())
-
-    consumer_cba_totals = pd.Series(consumer_cba)
     total_cba = float(consumer_cba_totals.sum())
     print(f"Standard CBA sum: {total_cba/1e9:.3f} Gt")
 
     # ------------------------------------------------------------------
-    # STEP 2: World-average intensities per sector (f_world)
+    # STEP 2: Foreign-final-demand output per producer row (Kander weights for 'world market')
+    #         x_foreign_row = sum_{r≠s(row)} x_row^{s(row), r}
     # ------------------------------------------------------------------
-    sectors = idx.get_level_values(1).to_numpy()
-    unique_sectors = pd.unique(sectors)
+    print("\nComputing foreign-final-demand output per producer row (x_foreign)...")
+    x_total_by_row = X.sum(axis=1)  # sum over all final demand regions
 
-    f_world = np.zeros_like(f_dom, dtype=float)
+    # domestic final demand column for each row depends on its producer region
+    j_by_row = np.array([region_to_j[r] for r in prod_regions], dtype=int)
+    x_domestic_by_row = X[np.arange(n), j_by_row]
 
-    print("\nComputing world-average intensities per sector...")
-    for sec in unique_sectors:
-        sec_mask = (sectors == sec)
-        x_sec = x[sec_mask]
-        e_sec = e[sec_mask]
-        f_sec_world = (e_sec.sum() / x_sec.sum()) if x_sec.sum() > 0 else 0.0
-        f_world[sec_mask] = f_sec_world
-
-    print(f"  Domestic f:   min={f_dom.min():.2e}, max={f_dom.max():.2e}")
-    print(f"  World-avg f*: min={f_world.min():.2e}, max={f_world.max():.2e}")
+    x_foreign = x_total_by_row - x_domestic_by_row
+    x_foreign = np.maximum(x_foreign, 0.0)  # guard tiny negatives from numerics
 
     # ------------------------------------------------------------------
-    # STEP 3: Exports by producer-sector
+    # STEP 3: Compute qdot (world market avg) per SECTOR, then map to rows
+    #         qdot_sec = sum_{rows in sec} q_row * x_foreign_row / sum x_foreign_row
     # ------------------------------------------------------------------
-    print("\nComputing exports by producer-sector...")
+    print(f"\nComputing benchmark intensities per sector ({export_benchmark_mode})...")
 
-    Z = ixi_data.Z.values
-    Y = ixi_data.Y.values
+    q_world = np.zeros_like(f_dom, dtype=float)
 
-    prod_regions = idx.get_level_values(0).to_numpy()
-    col_regions_Z = ixi_data.Z.columns.get_level_values(0).to_numpy()
-    col_regions_Y = ixi_data.Y.columns.get_level_values(0).to_numpy()
+    if export_benchmark_mode == "export_weighted":
+        # Kander "world market": weighted by production that ends up in foreign final consumption
+        for sec in unique_sectors:
+            sec_mask = (sectors == sec)
+            w = x_foreign[sec_mask]
+            q = f_dom[sec_mask]
+            wsum = np.nansum(w)
+            if wsum > 0:
+                qdot = np.nansum(q * w) / wsum
+            else:
+                # fallback: output-weighted if sector has no foreign-final-demand output
+                x_sec = x[sec_mask]
+                e_sec = e[sec_mask]
+                qdot = (e_sec.sum() / x_sec.sum()) if x_sec.sum() > 0 else 0.0
+            q_world[sec_mask] = qdot
 
-    x_exports = np.zeros(n, dtype=float)
+    elif export_benchmark_mode == "output_weighted":
+        # global output-weighted benchmark (NOT “world market” in Kander wording, but useful sensitivity)
+        for sec in unique_sectors:
+            sec_mask = (sectors == sec)
+            x_sec = x[sec_mask]
+            e_sec = e[sec_mask]
+            qdot = (e_sec.sum() / x_sec.sum()) if x_sec.sum() > 0 else 0.0
+            q_world[sec_mask] = qdot
+    else:
+        raise ValueError("export_benchmark_mode must be 'export_weighted' or 'output_weighted'")
 
-    for r in regions:
-        mask_prod_r = (prod_regions == r)
-        mask_cols_Z_export = (col_regions_Z != r)
-        mask_cols_Y_export = (col_regions_Y != r)
-
-        if mask_prod_r.any():
-            x_exports[mask_prod_r] = (
-                Z[np.ix_(mask_prod_r, mask_cols_Z_export)].sum(axis=1)
-                + Y[np.ix_(mask_prod_r, mask_cols_Y_export)].sum(axis=1)
-            )
-
-    print(f"  Total exports (sum over sectors): {x_exports.sum()/1e3:.3f} B€")
-
-    # Export-related emissions, actual vs world-avg
-    E_exp_actual = f_dom * x_exports
-    E_exp_world  = f_world * x_exports
-    delta_exports = E_exp_world - E_exp_actual
+    print(f"  Domestic q:   min={np.nanmin(f_dom):.2e}, max={np.nanmax(f_dom):.2e}")
+    print(f"  Bench qdot:   min={np.nanmin(q_world):.2e}, max={np.nanmax(q_world):.2e}")
 
     # ------------------------------------------------------------------
-    # STEP 4: Build TCBA per country (Option A)
+    # STEP 4: Compute EEE_s (actual) and EEE*_s (benchmark) using x_foreign weights
     # ------------------------------------------------------------------
-    print("\nBuilding TCBA (Option A)...")
-
-    consumer_tcba = {}
+    print("\nComputing embodied export emissions (EEE) per exporter country...")
+    EEE_actual = {}
+    EEE_world = {}
     for r in regions:
         mask_r = (prod_regions == r)
-        delta_r = float(delta_exports[mask_r].sum())
-        consumer_tcba[r] = float(consumer_cba_totals[r] - delta_r)
+        EEE_actual[r] = float((f_dom[mask_r]   * x_foreign[mask_r]).sum())
+        EEE_world[r]  = float((q_world[mask_r] * x_foreign[mask_r]).sum())
 
-    consumer_tcba_totals = pd.Series(consumer_tcba)
+    # ------------------------------------------------------------------
+    # STEP 5: Build TCBA totals (Kander Option A)
+    #         TCBA_s = CBA_s - (EEE*_s - EEE_s)
+    # ------------------------------------------------------------------
+    consumer_tcba_totals = pd.Series(
+        {r: float(consumer_cba_totals[r] - (EEE_world[r] - EEE_actual[r])) for r in regions}
+    )
     total_tcba = float(consumer_tcba_totals.sum())
     print(f"TCBA sum (before scaling): {total_tcba/1e9:.3f} Gt")
 
@@ -730,82 +762,81 @@ def calculate_vabr_tech_adjusted(
     print(f"TCBA sum (after scaling): {consumer_tcba_totals.sum()/1e9:.3f} Gt")
 
     # ------------------------------------------------------------------
-    # STEP 5: Allocate TCBA via Piñero operator (and rescale to TCBA_c)
+    # STEP 6: Allocate TCBA via your (literal) Piñero operator, then rescale to TCBA_c
     # ------------------------------------------------------------------
-    print("\nAllocating TCBA via Piñero operator...")
+    print("\nAllocating TCBA via Piñero operator (then rescaling to TCBA_c)...")
 
     vabr_allocation = np.zeros(n, dtype=float)
-    allocation_flows = [] if return_allocation_details else None
+    allocation_rows = [] if return_allocation_details else None
 
-    for consuming_region in regions:
-        mask_fd = (Y_df.columns.get_level_values(0) == consuming_region)
-        y_region = Y_df.loc[:, mask_fd].sum(axis=1).values
-
+    for j, consuming_region in enumerate(regions):
+        y_c = Y_by_country[:, j]
         tcba_c = float(consumer_tcba_totals[consuming_region])
         if tcba_c == 0:
             continue
 
-        # Piñero raw allocation (n,)
-        req1 = L @ y_region
+        # reuse req1 = L @ y_c from X (already computed)
+        req1 = X[:, j]
         emis_vec = f_dom * req1
         req2 = L @ emis_vec
-        raw_alloc = v_clean * req2
+        raw_alloc = v_clean_vec * req2
 
         s = float(raw_alloc.sum())
         if s > 0:
             allocated = raw_alloc * (tcba_c / s)
         else:
-            # IMPORTANT: keep country mass consistency even if raw_alloc is all zero
             allocated = np.ones_like(raw_alloc) * (tcba_c / len(raw_alloc))
 
         vabr_allocation += allocated
 
         if return_allocation_details:
-            for i, (prod_country, prod_sector) in enumerate(idx):
-                val = allocated[i]
-                if val > 0:
-                    allocation_flows.append({
+            # WARNING: can be huge
+            nz = np.where(allocated > 0)[0]
+            for i in nz:
+                prod_country, prod_sector = idx[i]
+                allocation_rows.append(
+                    {
                         "consuming_region": consuming_region,
                         "producing_country": prod_country,
                         "producing_sector": prod_sector,
-                        "allocated_emissions": val,
-                        "value_creation": np.nan,
-                        "allocation_share": np.nan
-                    })
+                        "allocated_emissions": float(allocated[i]),
+                    }
+                )
 
     # ------------------------------------------------------------------
-    # STEP 6: Aggregate by producing country
+    # STEP 7: Aggregate by producing country
     # ------------------------------------------------------------------
     vabr_by_country = {}
     vabr_by_sector_region = {}
 
     for r in regions:
         mask_r = (prod_regions == r)
-        region_indices = np.where(mask_r)[0]
-
-        vabr_by_country[r] = float(vabr_allocation[region_indices].sum())
-        vabr_by_sector_region[r] = pd.Series(
-            vabr_allocation[region_indices],
-            index=idx[mask_r]
-        )
+        vabr_by_country[r] = float(vabr_allocation[mask_r].sum())
+        vabr_by_sector_region[r] = pd.Series(vabr_allocation[mask_r], index=idx[mask_r])
 
     vabr_t_techA = pd.Series(vabr_by_country)
 
-    # Validation (global)
+    # ------------------------------------------------------------------
+    # STEP 8: Validation / diagnostics
+    # ------------------------------------------------------------------
     total_out = float(vabr_t_techA.sum())
     denom = float(consumer_tcba_totals.sum())
     err = (abs(total_out - denom) / denom * 100) if denom > 0 else 0.0
-    print(f"\nTotal T-VABR (Option A): {total_out/1e9:.3f} Gt, Error vs TCBA sum: {err:.6f}%")
+
+    print(f"\nTotal T-VABR: {total_out/1e9:.3f} Gt, Error vs TCBA sum: {err:.6f}%")
+    print("Sanity (EEE* - EEE) for first 5 regions:")
+    for r in regions[:5]:
+        print(f"  {r}: {(EEE_world[r] - EEE_actual[r]) / 1e9:+.3f} Gt")
 
     if return_allocation_details:
-        allocation_df = pd.DataFrame(allocation_flows)
+        allocation_df = pd.DataFrame(allocation_rows)
         allocation_matrix = allocation_df.pivot_table(
             index=["producing_country", "producing_sector"],
             columns="consuming_region",
             values="allocated_emissions",
-            fill_value=0
+            fill_value=0.0,
+            aggfunc="sum",
         )
-        print(f"Allocation matrix (T-VABR Option A): {allocation_matrix.shape}, {len(allocation_df):,} flows")
         return vabr_t_techA, vabr_by_sector_region, consumer_tcba_totals, allocation_matrix, allocation_df
     else:
         return vabr_t_techA, vabr_by_sector_region, consumer_tcba_totals
