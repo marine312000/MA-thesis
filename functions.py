@@ -842,99 +842,96 @@ def calculate_vabr_tech_adjusted(
         return vabr_t_techA, vabr_by_sector_region, consumer_tcba_totals
 
 
+def calculate_tech_gap_penalty(
+    ixi_data,
+    producer_emissions,
+    benchmark_mode="world_avg"
+):
+    """
+    Producer-side technology-gap penalty (sector-region level).
 
-def calculate_tech_gap_penalty(ixi_data, producer_emissions, 
-                               benchmark_mode="world_avg"):
+    For each sector-region (row i):
+      - actual intensity f_i = e_i / x_i
+      - benchmark intensity f*_sec(i) computed across ALL regions in that sector
+      - absolute gap_i = max(0, f_i - f*_sec(i))
+      - avoidable emissions (absolute) = gap_i * x_i
+
+    Returns
+    -------
+    excess_emissions : pd.Series indexed like ixi_data.x.index
+    sector_gaps : pd.DataFrame with intensities, gaps, excess emissions, output
     """
-    Producer-side technology-gap penalty.
-    
-    For each sector-region:
-      - computes actual emission intensity (t/€),
-      - computes a sectoral benchmark intensity (world_avg / best / best_quartile),
-      - defines an intensity gap = max(0, actual - benchmark),
-      - converts this into "avoidable emissions" = gap * output.
-      
-    Returns:
-      excess_emissions : pd.Series (index: (region, sector))
-          Avoidable emissions in tonnes CO2-eq.
-      sector_gaps : pd.DataFrame
-          Detailed intensities and gaps per sector-region.
-    """
-    print(f"\n=== TECHNOLOGY-GAP PENALTY (Producer-Side, benchmark={benchmark_mode}) ===")
-    
-    # Total output and intensities
-    x = ixi_data.x.values.flatten()
-    e = np.asarray(producer_emissions).flatten()
-    
-    f_actual = np.divide(
-        e,
-        x,
-        out=np.zeros_like(e, dtype=float),
-        where=(x > 0)
-    )
-    
-    # Sector labels
+    print(f"\n=== TECHNOLOGY-GAP (Producer-side), benchmark={benchmark_mode} ===")
+
     idx = ixi_data.x.index
-    sectors = idx.get_level_values(1)
-    unique_sectors = sectors.unique()
-    
+    x = ixi_data.x.values.reshape(-1).astype(float)
+
+    if hasattr(producer_emissions, "reindex"):
+        e = producer_emissions.reindex(idx).values.reshape(-1).astype(float)
+    else:
+        e = np.asarray(producer_emissions, dtype=float).reshape(-1)
+
+    # Actual intensity (t/€)
+    f_actual = np.divide(e, x, out=np.zeros_like(e, dtype=float), where=(x > 0))
+
+    sectors = idx.get_level_values(1).to_numpy()
+    unique_sectors = pd.unique(sectors)
+
     f_bench = np.zeros_like(f_actual, dtype=float)
-    
+
     print("Calculating sectoral benchmarks...")
-    
     for sec in unique_sectors:
         mask = (sectors == sec)
         f_sec = f_actual[mask]
         x_sec = x[mask]
-        
+
         if benchmark_mode == "world_avg":
-            if x_sec.sum() > 0:
+            # output-weighted world average intensity for that sector
+            if np.sum(x_sec) > 0:
                 bench = np.average(f_sec, weights=x_sec)
             else:
-                bench = f_sec.mean()
+                bench = float(np.nanmean(f_sec))
         elif benchmark_mode == "best_quartile":
-            sorted_int = np.sort(f_sec[f_sec > 0])
-            if len(sorted_int) > 0:
-                cutoff = max(1, int(len(sorted_int) * 0.25))
-                bench = sorted_int[:cutoff].mean()
+            vals = f_sec[f_sec > 0]
+            if len(vals) > 0:
+                vals_sorted = np.sort(vals)
+                cutoff = max(1, int(len(vals_sorted) * 0.25))
+                bench = float(np.mean(vals_sorted[:cutoff]))
             else:
                 bench = 0.0
         elif benchmark_mode == "best":
-            bench = f_sec[f_sec > 0].min() if (f_sec > 0).any() else 0.0
+            vals = f_sec[f_sec > 0]
+            bench = float(np.min(vals)) if len(vals) > 0 else 0.0
         else:
             raise ValueError("benchmark_mode must be 'world_avg', 'best_quartile', or 'best'")
-        
+
         f_bench[mask] = bench
-    
-    # Intensity gap and avoidable emissions
-    gap = np.maximum(0, f_actual - f_bench)
-    excess_emissions_array = gap * x  # tonnes CO2-eq
-    
-    excess_emissions = pd.Series(
-        excess_emissions_array,
-        index=idx,
-        name="excess_emissions"
+
+    # Absolute gap (t/€) and "avoidable" emissions (t)
+    gap_abs = np.maximum(0.0, f_actual - f_bench)
+    excess_emissions_array = gap_abs * x
+
+    excess_emissions = pd.Series(excess_emissions_array, index=idx, name="excess_emissions")
+
+    sector_gaps = pd.DataFrame(
+        {
+            "output": x,
+            "actual_intensity": f_actual,
+            "benchmark_intensity": f_bench,
+            "gap_abs": gap_abs,
+            "excess_emissions": excess_emissions_array,
+        },
+        index=idx
     )
-    
-    sector_gaps = pd.DataFrame({
-        "actual_intensity": f_actual,
-        "benchmark_intensity": f_bench,
-        "gap": gap,
-        "excess_emissions": excess_emissions_array,
-        "output": x
-    }, index=idx)
-    
-    total_actual = e.sum()
-    total_excess = excess_emissions_array.sum()
-    if total_actual > 0:
-        share = 100 * total_excess / total_actual
-    else:
-        share = 0.0
-    print(f"Total actual emissions:   {total_actual/1e9:.2f} Gt")
-    print(f"Total avoidable emissions: {total_excess/1e9:.2f} Gt "
-          f"({share:.1f}% of global emissions)")
-    
+
+    total_actual = float(np.nansum(e))
+    total_excess = float(np.nansum(excess_emissions_array))
+    share = 100 * total_excess / total_actual if total_actual > 0 else 0.0
+    print(f"Total actual emissions:    {total_actual/1e9:.2f} Gt")
+    print(f"Total 'avoidable' (abs):   {total_excess/1e9:.2f} Gt ({share:.1f}% of global)")
+
     return excess_emissions, sector_gaps
+
 
 def calculate_vabr_with_tech_penalty(
     ixi_data,
@@ -943,111 +940,132 @@ def calculate_vabr_with_tech_penalty(
     benchmark_mode="world_avg",
     alpha=1.0,
     rel_gap_cap=5.0,
-    bench_floor=1e-12
+    bench_floor=1e-12,
+    penalty_only=True,
 ):
     """
-    VABR + producer-side technology-gap redistribution (Piñero-consistent, SAFE).
+    Annex exploration: VABR + producer-side technology-gap adjustment.
 
-    This version is compatible with your literal Piñero calculate_vabr():
-      - calculate_vabr() returns:
-          vabr_totals: Series indexed by consuming country
-          vabr_details: dict[consuming_country] -> Series over ALL producing sector-regions (idx)
+    IMPORTANT DESIGN CHOICE (for comparability with your plots):
+    - This function RETURNS producer-indexed totals (like Producer and TechA),
+      so you can put it in the same bar chart without mixing "consumer vs producer".
 
-    We compute a technology penalty for EACH CONSUMING COUNTRY by weighting its
-    Piñero sector allocation vector with producer-side technology gaps.
+    How it works:
+    1) Compute base (literal Piñero) allocation *details* by consuming country:
+         vabr_details[c] : Series over producing (region,sector) rows (tonnes)
+       (This is your existing calculate_vabr output.)
+    2) Compute producer-side relative intensity gap per producing row:
+         rel_gap_i = (f_i - f*_sec(i)) / f*_sec(i)
+       with safe floors/caps; optionally penalty-only (no credits).
+    3) For each consuming country c, compute a scalar penalty term:
+         tech_penalty_cons[c] = sum_i vabr_details[c][i] * rel_gap_i
+    4) Build consumer-indexed adjusted totals and rescale to conserve global mass.
+    5) Convert to producer-indexed totals by aggregating adjusted allocations:
+         adjusted_alloc_c[i] = vabr_details[c][i] * (adj_total_c / base_total_c)
+         producer_total[r] = sum_{i in r} sum_c adjusted_alloc_c[i]
 
-    SAFE features:
-      - avoids division by ~0 benchmarks (bench_floor)
-      - caps relative gaps to avoid blow-ups (rel_gap_cap)
-      - keeps global mass constant by scaling back to base VABR global total
-
-    Returns
-    -------
-    responsibility_total : pd.Series  (by consuming country)
-    vabr_totals          : pd.Series  (base Piñero VABR by consuming country)
-    tech_penalty         : pd.Series  (penalty term by consuming country, before scaling)
-    sector_gaps          : pd.DataFrame (producer-side intensities and gaps)
+    Returns (same signature as your existing code expects):
+      responsibility_total : pd.Series (PRODUCER-indexed adjusted totals)
+      vabr_totals          : pd.Series (base Piñero totals by consuming country)
+      tech_penalty         : pd.Series (penalty term by consuming country, pre-scaling)
+      sector_gaps          : pd.DataFrame (producer-side gaps + rel_gap)
     """
-    print(f"\n=== VABR + TECHNOLOGY-GAP REDISTRIBUTION (Piñero-consistent, SAFE) ===")
-    print(f"Benchmark: {benchmark_mode}, alpha={alpha}, rel_gap_cap={rel_gap_cap}")
+    print(f"\n=== VABR + TECH-GAP (Annex exploration) ===")
+    print(f"Benchmark={benchmark_mode}, alpha={alpha}, rel_gap_cap={rel_gap_cap}, penalty_only={penalty_only}")
+
+    idx = ixi_data.x.index
+    prod_regions = idx.get_level_values(0).to_numpy()
+    regions = list(ixi_data.get_regions())
 
     # --------------------------------------------------------------
-    # 1) Base literal Piñero VABR (by consuming country) + sector allocation vectors
+    # 1) Base Piñero VABR totals (consumers) + allocation vectors
     # --------------------------------------------------------------
-    vabr_totals, vabr_details, consumer_totals = calculate_vabr(
+    vabr_totals_cons, vabr_details, _ = calculate_vabr(
         ixi_data, producer_emissions, v_clean, return_allocation_details=False
     )
-    base_total = float(vabr_totals.sum())
-    print(f"Base Piñero VABR global: {base_total/1e9:.3f} Gt")
+    base_total_global = float(vabr_totals_cons.sum())
+    print(f"Base Piñero VABR global (consumer-index): {base_total_global/1e9:.3f} Gt")
 
     # --------------------------------------------------------------
-    # 2) Producer-side technology gaps (per producing sector-region)
+    # 2) Producer-side gaps
     # --------------------------------------------------------------
-    excess_emissions, sector_gaps = calculate_tech_gap_penalty(
-        ixi_data, producer_emissions, benchmark_mode
-    )
+    _, sector_gaps = calculate_tech_gap_penalty(ixi_data, producer_emissions, benchmark_mode)
 
     f_act = sector_gaps["actual_intensity"].astype(float)
     f_bench = sector_gaps["benchmark_intensity"].astype(float)
 
-    # SAFE relative gap (dimensionless), capped
     denom = f_bench.copy()
-    denom[denom.abs() < bench_floor] = np.nan  # avoid divide-by-(near)-zero
+    denom[denom.abs() < bench_floor] = np.nan
+
     rel_gap = (f_act - f_bench) / denom
     rel_gap = rel_gap.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
-    # cap to avoid absurd blow-ups
+    # cap to avoid blow-ups
     rel_gap = rel_gap.clip(lower=-rel_gap_cap, upper=rel_gap_cap)
 
+    if penalty_only:
+        rel_gap = rel_gap.clip(lower=0.0)
+
     sector_gaps["rel_gap"] = rel_gap
+    rel_gap_vec = rel_gap.reindex(idx).fillna(0.0).values  # aligned vector
 
     # --------------------------------------------------------------
-    # 3) Tech penalty by CONSUMING country:
-    #    penalty_c = sum_i [ sector_resp_c[i] * rel_gap_i ]
+    # 3) Tech penalty term by CONSUMING country (scalar)
     # --------------------------------------------------------------
-    regions = ixi_data.get_regions()
-    tech_penalty_by_country = {}
-
-    # sector_gaps index is same MultiIndex as ixi_data.x.index (region, sector)
-    rel_gap_vec = rel_gap.reindex(ixi_data.x.index).fillna(0.0)
-
+    tech_penalty_cons = {}
     for c in regions:
         if c not in vabr_details:
-            tech_penalty_by_country[c] = 0.0
+            tech_penalty_cons[c] = 0.0
+            continue
+        alloc_c = vabr_details[c].reindex(idx).fillna(0.0).values  # tonnes on producing rows
+        tech_penalty_cons[c] = float(np.sum(alloc_c * rel_gap_vec))
+
+    tech_penalty_cons = pd.Series(tech_penalty_cons)
+    print(f"Net penalty sum (consumer-index, pre-scaling): {tech_penalty_cons.sum()/1e9:.3f} Gt")
+
+    # --------------------------------------------------------------
+    # 4) Consumer-index adjusted totals + global mass rescale
+    # --------------------------------------------------------------
+    cons_adjusted_raw = vabr_totals_cons + alpha * tech_penalty_cons
+    raw_total = float(cons_adjusted_raw.sum())
+    print(f"Raw adjusted global (consumer-index): {raw_total/1e9:.3f} Gt")
+
+    scale = (base_total_global / raw_total) if raw_total != 0 else 1.0
+    cons_adjusted = cons_adjusted_raw * scale
+
+    print(f"Scale applied for mass conservation: {scale:.6f}")
+    print(f"Final adjusted global (consumer-index): {cons_adjusted.sum()/1e9:.3f} Gt")
+
+    # --------------------------------------------------------------
+    # 5) Convert to PRODUCER-index totals for comparability with TechA/Producer plots
+    #    We keep the allocation *pattern* within each consumer c the same,
+    #    only scaling its allocation vector by (adjusted_total_c / base_total_c).
+    # --------------------------------------------------------------
+    producer_total = pd.Series(0.0, index=pd.Index(regions, name="region"))
+
+    for c in regions:
+        base_c = float(vabr_totals_cons.get(c, 0.0))
+        adj_c = float(cons_adjusted.get(c, 0.0))
+
+        if base_c == 0:
             continue
 
-        sector_resp_c = vabr_details[c].reindex(ixi_data.x.index).fillna(0.0)
+        factor_c = adj_c / base_c
 
-        # penalty in tonnes CO2-eq
-        tech_penalty_by_country[c] = float((sector_resp_c.values * rel_gap_vec.values).sum())
+        alloc_c = vabr_details[c].reindex(idx).fillna(0.0).values  # tonnes on producing rows
+        alloc_c_adj = alloc_c * factor_c
 
-    tech_penalty = pd.Series(tech_penalty_by_country)
+        # aggregate to producing country
+        for r in regions:
+            mask_r = (prod_regions == r)
+            producer_total[r] += float(np.sum(alloc_c_adj[mask_r]))
 
-    net_adj = float(tech_penalty.sum())
-    print(f"Net technology adjustment (sum over consuming countries): {net_adj/1e9:.3f} Gt")
+    # Diagnostics: producer totals should sum to global (same as consumer global)
+    print(f"Producer-index adjusted global: {producer_total.sum()/1e9:.3f} Gt")
 
-    # --------------------------------------------------------------
-    # 4) Add penalty and rescale to keep global total = base_total
-    # --------------------------------------------------------------
-    responsibility_raw = vabr_totals + alpha * tech_penalty
-    raw_total = float(responsibility_raw.sum())
-    print(f"Raw adjusted global: {raw_total/1e9:.3f} Gt")
-
-    if raw_total != 0:
-        scale = base_total / raw_total
-    else:
-        scale = 1.0
-
-    responsibility_total = responsibility_raw * scale
-
-    print("Global totals after scaling (Gt CO2-eq):")
-    print(f"  Base VABR total:       {base_total/1e9:.3f}")
-    print(f"  Raw adjusted total:    {raw_total/1e9:.3f}")
-    print(f"  Scale factor applied:  {scale:.6f}")
-    print(f"  Final (mass-conserv.): {responsibility_total.sum()/1e9:.3f}")
-
-    return responsibility_total, vabr_totals, tech_penalty, sector_gaps
-
+    # IMPORTANT: return signature unchanged for your existing plotting pipeline
+    # responsibility_total (producer-index), vabr_totals (consumer-index base), tech_penalty (consumer-index), sector_gaps
+    return producer_total, vabr_totals_cons, tech_penalty_cons, sector_gaps
 
 
 
