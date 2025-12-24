@@ -457,7 +457,7 @@ def calculate_vabr(ixi_data, producer_emissions, v_clean,
     but with per-consuming-country scaling so it stays mass-conserving even
     with cleaned/capped v_clean.
 
-    Returns (same as your old function):
+    Returns (same as old function):
       vabr_totals (producer-country totals),
       vabr_by_sector_region (dict by producer country),
       consumer_totals (CBA by consuming country),
@@ -551,7 +551,7 @@ def calculate_vabr(ixi_data, producer_emissions, v_clean,
                     })
 
     # ----------------------------
-    # 5) Aggregate producer-side totals by producing country (LIKE YOUR OLD FUNCTION)
+    # 5) Aggregate producer-side totals by producing country (LIKE OLD FUNCTION)
     # ----------------------------
     vabr_by_country = {}
     vabr_by_sector_region = {}
@@ -578,7 +578,7 @@ def calculate_vabr(ixi_data, producer_emissions, v_clean,
     print(f"Total VABR (Piñero): {total_vabr/1e9:.3f} Gt, Error vs CBA: {error:.6f}%")
 
     # ----------------------------
-    # 7) Return (same format as your old function)
+    # 7) Return (same format as old function)
     # ----------------------------
     if return_allocation_details:
         allocation_df = pd.DataFrame(allocation_flows)
@@ -607,7 +607,7 @@ def calculate_vabr_tech_adjusted(
     export_benchmark_mode="export_weighted",  # "export_weighted" (Kander “world market”) or "output_weighted"
 ):
     """
-    KANDER-STYLE TCBA (Option A) + your (literal Piñero) allocation.
+    KANDER-STYLE TCBA (Option A) + (literal Piñero) allocation.
 
     Implements Kander's definitions using:
       x_i^{sr} = (L @ y^r)_i    (output of producer row i in country s for final demand in r)
@@ -617,7 +617,7 @@ def calculate_vabr_tech_adjusted(
       EEE*_s (bench)  = sum_{rows in s} qdot_sector(row) * x_foreign_row
       TCBA_s = CBA_s - (EEE*_s - EEE_s)
 
-    Then allocates each consuming country's TCBA total with your Piñero operator and rescales to TCBA_c.
+    Then allocates each consuming country's TCBA total with Piñero operator and rescales to TCBA_c.
     """
 
     print("\n=== TECHNOLOGY-ADJUSTED VABR (Kander-style TCBA, embodied exports) + Piñero allocation ===")
@@ -762,7 +762,7 @@ def calculate_vabr_tech_adjusted(
     print(f"TCBA sum (after scaling): {consumer_tcba_totals.sum()/1e9:.3f} Gt")
 
     # ------------------------------------------------------------------
-    # STEP 6: Allocate TCBA via your (literal) Piñero operator, then rescale to TCBA_c
+    # STEP 6: Allocate TCBA via (literal) Piñero operator, then rescale to TCBA_c
     # ------------------------------------------------------------------
     print("\nAllocating TCBA via Piñero operator (then rescaling to TCBA_c)...")
 
@@ -946,14 +946,14 @@ def calculate_vabr_with_tech_penalty(
     """
     Annex exploration: VABR + producer-side technology-gap adjustment.
 
-    IMPORTANT DESIGN CHOICE (for comparability with your plots):
+    IMPORTANT DESIGN CHOICE (for comparability with plots):
     - This function RETURNS producer-indexed totals (like Producer and TechA),
       so you can put it in the same bar chart without mixing "consumer vs producer".
 
     How it works:
     1) Compute base (literal Piñero) allocation *details* by consuming country:
          vabr_details[c] : Series over producing (region,sector) rows (tonnes)
-       (This is your existing calculate_vabr output.)
+       (This is existing calculate_vabr output.)
     2) Compute producer-side relative intensity gap per producing row:
          rel_gap_i = (f_i - f*_sec(i)) / f*_sec(i)
        with safe floors/caps; optionally penalty-only (no credits).
@@ -964,7 +964,7 @@ def calculate_vabr_with_tech_penalty(
          adjusted_alloc_c[i] = vabr_details[c][i] * (adj_total_c / base_total_c)
          producer_total[r] = sum_{i in r} sum_c adjusted_alloc_c[i]
 
-    Returns (same signature as your existing code expects):
+    Returns (same signature as existing code expects):
       responsibility_total : pd.Series (PRODUCER-indexed adjusted totals)
       vabr_totals          : pd.Series (base Piñero totals by consuming country)
       tech_penalty         : pd.Series (penalty term by consuming country, pre-scaling)
@@ -1063,7 +1063,7 @@ def calculate_vabr_with_tech_penalty(
     # Diagnostics: producer totals should sum to global (same as consumer global)
     print(f"Producer-index adjusted global: {producer_total.sum()/1e9:.3f} Gt")
 
-    # IMPORTANT: return signature unchanged for your existing plotting pipeline
+    # IMPORTANT: return signature unchanged for existing plotting pipeline
     # responsibility_total (producer-index), vabr_totals (consumer-index base), tech_penalty (consumer-index), sector_gaps
     return producer_total, vabr_totals_cons, tech_penalty_cons, sector_gaps
 
